@@ -1,0 +1,10 @@
+services:
+  twitch-radar:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - twitch_data:/data
+volumes:
+  twitch_data:

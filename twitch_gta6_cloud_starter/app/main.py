@@ -40,7 +40,7 @@ KNOWN_STREAMERS = {
     x.strip().lower()
     for x in os.getenv(
         "KNOWN_STREAMERS",
-        "ishowspeed,kaicenat,xqc,jynxzi,rubius"
+        "ishowspeed,kaicenat,xqc,jynxzi,rubius,JL TOMY"
     ).split(",")
     if x.strip()
 }

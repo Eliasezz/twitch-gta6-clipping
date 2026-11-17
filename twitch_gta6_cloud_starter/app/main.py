@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 
 # ============================================================
-# CONFIGURATION
+# 1. CONFIGURATION
 # ============================================================
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "").strip()
@@ -41,12 +41,12 @@ TWITCH_API_URL = "https://api.twitch.tv/helix"
 app = FastAPI(
     title="Twitch GTA VI Clipping Radar",
     description="Radar automatique de clips Twitch autour de GTA VI.",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 
 # ============================================================
-# ÉTAT DU SERVICE
+# 2. ÉTAT DU SERVICE
 # ============================================================
 
 token_cache = {
@@ -64,7 +64,7 @@ poll_lock = threading.Lock()
 
 
 # ============================================================
-# BASE DE DONNÉES SQLITE
+# 3. BASE DE DONNÉES
 # ============================================================
 
 def get_connection():
@@ -73,8 +73,13 @@ def get_connection():
     if directory:
         os.makedirs(directory, exist_ok=True)
 
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 30000")
 
     return connection
 
@@ -83,7 +88,7 @@ def init_database():
     connection = get_connection()
 
     try:
-        # Création de la table pour les nouvelles installations.
+        # Nouvelle structure standard.
         connection.execute("""
             CREATE TABLE IF NOT EXISTS clips (
                 id TEXT PRIMARY KEY,
@@ -101,11 +106,12 @@ def init_database():
                 thumbnail_url TEXT,
                 source_type TEXT DEFAULT 'discovery',
                 eligible_for_processing INTEGER DEFAULT 0,
-                fetched_at TEXT
+                fetched_at TEXT,
+                discovered_at TEXT
             )
         """)
 
-        # Lecture de la structure existante.
+        # Lire la structure réelle de la base existante.
         existing_columns = {
             row["name"]
             for row in connection.execute(
@@ -113,25 +119,10 @@ def init_database():
             ).fetchall()
         }
 
-        # CORRECTION DE L'ERREUR :
-        # Si l'ancienne base ne possède pas id, on l'ajoute.
-        if "id" not in existing_columns:
-            connection.execute(
-                "ALTER TABLE clips ADD COLUMN id TEXT"
-            )
-            existing_columns.add("id")
-
-        # Migration des anciennes données utilisant clip_id.
-        if "clip_id" in existing_columns:
-            connection.execute("""
-                UPDATE clips
-                SET id = clip_id
-                WHERE (id IS NULL OR id = '')
-                  AND clip_id IS NOT NULL
-            """)
-
-        # Ajout des autres colonnes manquantes.
+        # Colonnes à ajouter aux anciennes bases.
         migrations = {
+            "id": "TEXT",
+            "clip_id": "TEXT",
             "url": "TEXT",
             "embed_url": "TEXT",
             "broadcaster_id": "TEXT",
@@ -146,7 +137,8 @@ def init_database():
             "thumbnail_url": "TEXT",
             "source_type": "TEXT DEFAULT 'discovery'",
             "eligible_for_processing": "INTEGER DEFAULT 0",
-            "fetched_at": "TEXT"
+            "fetched_at": "TEXT",
+            "discovered_at": "TEXT"
         }
 
         for column, definition in migrations.items():
@@ -155,7 +147,31 @@ def init_database():
                     f"ALTER TABLE clips ADD COLUMN {column} {definition}"
                 )
 
-        # Évite les doublons d'identifiants dans les anciennes bases.
+        # Mettre à jour la liste des colonnes après migration.
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(clips)"
+            ).fetchall()
+        }
+
+        # Récupérer les anciens identifiants.
+        if "clip_id" in existing_columns:
+            connection.execute("""
+                UPDATE clips
+                SET id = clip_id
+                WHERE (id IS NULL OR id = '')
+                  AND clip_id IS NOT NULL
+            """)
+
+            connection.execute("""
+                UPDATE clips
+                SET clip_id = id
+                WHERE (clip_id IS NULL OR clip_id = '')
+                  AND id IS NOT NULL
+            """)
+
+        # Éliminer les éventuels doublons d'id avant indexation.
         connection.execute("""
             UPDATE clips
             SET id = NULL
@@ -168,7 +184,20 @@ def init_database():
               )
         """)
 
-        # Rend id unique pour permettre ON CONFLICT(id).
+        # Récupérer discovered_at depuis fetched_at ou created_at
+        # lorsque la colonne est vide.
+        connection.execute("""
+            UPDATE clips
+            SET discovered_at = COALESCE(
+                NULLIF(discovered_at, ''),
+                NULLIF(fetched_at, ''),
+                created_at
+            )
+            WHERE discovered_at IS NULL
+               OR discovered_at = ''
+        """)
+
+        # Index unique nécessaire pour ON CONFLICT(id).
         connection.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_id
             ON clips(id)
@@ -186,8 +215,8 @@ def init_database():
 
         connection.commit()
 
-        print("Base SQLite initialisée avec succès.")
-        print("Migration des anciennes données terminée.")
+        print("SQLite : migration terminée.")
+        print("SQLite : colonnes vérifiées :", sorted(existing_columns))
 
     except Exception:
         connection.rollback()
@@ -198,14 +227,14 @@ def init_database():
 
 
 # ============================================================
-# TWITCH : AUTHENTIFICATION
+# 4. TWITCH : AUTHENTIFICATION
 # ============================================================
 
 def get_twitch_token():
+
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
         raise RuntimeError(
-            "Les variables TWITCH_CLIENT_ID et TWITCH_CLIENT_SECRET "
-            "doivent être configurées dans Render."
+            "TWITCH_CLIENT_ID ou TWITCH_CLIENT_SECRET manquant dans Render."
         )
 
     now = time.time()
@@ -237,6 +266,7 @@ def get_twitch_token():
 
 
 def twitch_get(endpoint: str, params: dict | None = None):
+
     token = get_twitch_token()
 
     headers = {
@@ -251,8 +281,8 @@ def twitch_get(endpoint: str, params: dict | None = None):
         timeout=30
     )
 
-    # Renouvellement automatique si le token a expiré.
     if response.status_code == 401:
+
         token_cache["access_token"] = None
         token_cache["expires_at"] = 0
 
@@ -272,10 +302,11 @@ def twitch_get(endpoint: str, params: dict | None = None):
 
 
 # ============================================================
-# TWITCH : IDENTIFIER GTA VI
+# 5. IDENTIFIER GTA VI
 # ============================================================
 
 def get_gta_game_id():
+
     data = twitch_get(
         "games",
         {"name": "Grand Theft Auto VI"}
@@ -285,20 +316,22 @@ def get_gta_game_id():
 
     if not games:
         raise RuntimeError(
-            "Impossible de trouver la catégorie Grand Theft Auto VI sur Twitch."
+            "Catégorie Grand Theft Auto VI introuvable sur Twitch."
         )
 
     return games[0]["id"]
 
 
 # ============================================================
-# TWITCH : STREAMERS CONNUS
+# 6. STREAMERS CONNUS
 # ============================================================
 
 def resolve_known_streamers():
+
     resolved = {}
 
     for login in sorted(KNOWN_STREAMERS):
+
         try:
             data = twitch_get(
                 "users",
@@ -312,22 +345,17 @@ def resolve_known_streamers():
                 resolved[user["id"]] = user["login"].lower()
 
         except requests.RequestException as error:
-            print(
-                f"Erreur pendant la recherche du streamer {login}: {error}"
-            )
+            print(f"Erreur streamer {login}: {error}")
 
     return resolved
 
 
 # ============================================================
-# TWITCH : RÉCUPÉRER LES CLIPS
+# 7. RÉCUPÉRER LES CLIPS TWITCH
 # ============================================================
 
-def collect_category_clips(
-    game_id: str,
-    started_at: str,
-    ended_at: str
-):
+def collect_category_clips(game_id, started_at, ended_at):
+
     data = twitch_get(
         "clips",
         {
@@ -342,10 +370,11 @@ def collect_category_clips(
 
 
 def collect_known_streamer_clips(
-    broadcaster_id: str,
-    started_at: str,
-    ended_at: str
+    broadcaster_id,
+    started_at,
+    ended_at
 ):
+
     data = twitch_get(
         "clips",
         {
@@ -360,10 +389,11 @@ def collect_known_streamer_clips(
 
 
 # ============================================================
-# DATES
+# 8. DATES
 # ============================================================
 
-def parse_twitch_date(value: str):
+def parse_twitch_date(value):
+
     if not value:
         return None
 
@@ -382,13 +412,11 @@ def parse_twitch_date(value: str):
 
 
 # ============================================================
-# ENREGISTRER LES CLIPS
+# 9. ENREGISTREMENT COMPATIBLE AVEC LES ANCIENNES BASES
 # ============================================================
 
-def save_clips(
-    clips: list[dict[str, Any]],
-    known_ids: set[str]
-):
+def save_clips(clips: list[dict[str, Any]], known_ids: set[str]):
+
     connection = get_connection()
 
     now = datetime.now(timezone.utc)
@@ -398,7 +426,16 @@ def save_clips(
     eligible_count = 0
 
     try:
+
+        # Lire toutes les colonnes réelles.
+        schema = connection.execute(
+            "PRAGMA table_info(clips)"
+        ).fetchall()
+
+        columns = [row["name"] for row in schema]
+
         for clip in clips:
+
             clip_id = clip.get("id")
 
             if not clip_id:
@@ -413,9 +450,7 @@ def save_clips(
             if clip_date < cutoff or clip_date > now:
                 continue
 
-            view_count = int(
-                clip.get("view_count", 0) or 0
-            )
+            view_count = int(clip.get("view_count", 0) or 0)
 
             broadcaster_id = str(
                 clip.get("broadcaster_id", "")
@@ -429,66 +464,110 @@ def save_clips(
 
             eligible = 1 if view_count >= MIN_VIEWS else 0
 
+            fetched_at = now.isoformat()
+
             if eligible:
                 eligible_count += 1
 
-            fetched_at = now.isoformat()
+            # Toutes les valeurs connues.
+            values = {
+                "id": clip_id,
+                "clip_id": clip_id,
+                "discovered_at": fetched_at,
+                "url": clip.get("url"),
+                "embed_url": clip.get("embed_url"),
+                "broadcaster_id": broadcaster_id,
+                "broadcaster_name": clip.get("broadcaster_name"),
+                "creator_name": clip.get("creator_name"),
+                "video_id": clip.get("video_id"),
+                "game_id": clip.get("game_id"),
+                "language": clip.get("language"),
+                "title": clip.get("title"),
+                "view_count": view_count,
+                "created_at": created_at,
+                "thumbnail_url": clip.get("thumbnail_url"),
+                "source_type": source_type,
+                "eligible_for_processing": eligible,
+                "fetched_at": fetched_at
+            }
 
-            connection.execute("""
-                INSERT INTO clips (
-                    id,
-                    url,
-                    embed_url,
-                    broadcaster_id,
-                    broadcaster_name,
-                    creator_name,
-                    video_id,
-                    game_id,
-                    language,
-                    title,
-                    view_count,
-                    created_at,
-                    thumbnail_url,
-                    source_type,
-                    eligible_for_processing,
-                    fetched_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            # Compatibilité avec les colonnes supplémentaires
+            # obligatoires éventuellement présentes dans l'ancienne base.
+            insert_columns = []
+            insert_values = []
 
-                ON CONFLICT(id) DO UPDATE SET
-                    url = excluded.url,
-                    embed_url = excluded.embed_url,
-                    broadcaster_id = excluded.broadcaster_id,
-                    broadcaster_name = excluded.broadcaster_name,
-                    creator_name = excluded.creator_name,
-                    video_id = excluded.video_id,
-                    game_id = excluded.game_id,
-                    language = excluded.language,
-                    title = excluded.title,
-                    view_count = excluded.view_count,
-                    created_at = excluded.created_at,
-                    thumbnail_url = excluded.thumbnail_url,
-                    source_type = excluded.source_type,
-                    eligible_for_processing = excluded.eligible_for_processing,
-                    fetched_at = excluded.fetched_at
-            """, (
-                clip_id,
-                clip.get("url"),
-                clip.get("embed_url"),
-                broadcaster_id,
-                clip.get("broadcaster_name"),
-                clip.get("creator_name"),
-                clip.get("video_id"),
-                clip.get("game_id"),
-                clip.get("language"),
-                clip.get("title"),
-                view_count,
-                created_at,
-                clip.get("thumbnail_url"),
-                source_type,
-                eligible,
-                fetched_at
-            ))
+            for column_info in schema:
+
+                column = column_info["name"]
+                column_type = (column_info["type"] or "").upper()
+                not_null = column_info["notnull"]
+                default_value = column_info["dflt_value"]
+                is_primary_key = column_info["pk"]
+
+                # Laisser SQLite gérer les clés primaires
+                # INTEGER AUTOINCREMENT.
+                if (
+                    is_primary_key
+                    and column_type == "INTEGER"
+                    and column not in values
+                ):
+                    continue
+
+                if column in values:
+                    value = values[column]
+
+                elif not_null and default_value is None:
+                    # Valeur de secours pour une ancienne colonne
+                    # obligatoire non connue par cette version.
+                    if "INT" in column_type or "REAL" in column_type:
+                        value = 0
+                    elif "BLOB" in column_type:
+                        value = b""
+                    else:
+                        value = ""
+
+                else:
+                    # Ne pas remplacer les valeurs par défaut SQLite.
+                    continue
+
+                insert_columns.append(column)
+                insert_values.append(value)
+
+            placeholders = ", ".join(
+                ["?"] * len(insert_columns)
+            )
+
+            column_names = ", ".join(
+                f'"{column}"' for column in insert_columns
+            )
+
+            # Toutes les colonnes fournies sont actualisées
+            # sauf l'identifiant principal.
+            update_columns = [
+                column for column in insert_columns
+                if column != "id"
+            ]
+
+            update_clause = ", ".join(
+                f'"{column}" = excluded."{column}"'
+                for column in update_columns
+            )
+
+            if update_clause:
+                sql = f"""
+                    INSERT INTO clips ({column_names})
+                    VALUES ({placeholders})
+                    ON CONFLICT(id) DO UPDATE SET
+                    {update_clause}
+                """
+            else:
+                sql = f"""
+                    INSERT INTO clips ({column_names})
+                    VALUES ({placeholders})
+                    ON CONFLICT(id) DO NOTHING
+                """
+
+            connection.execute(sql, insert_values)
 
             saved_count += 1
 
@@ -505,10 +584,11 @@ def save_clips(
 
 
 # ============================================================
-# LANCER UNE RECHERCHE TWITCH
+# 10. LANCER UNE RECHERCHE TWITCH
 # ============================================================
 
 def poll_once():
+
     if not poll_lock.acquire(blocking=False):
         return {
             "status": "already_running",
@@ -516,6 +596,7 @@ def poll_once():
         }
 
     try:
+
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=LOOKBACK_HOURS)
 
@@ -538,6 +619,7 @@ def poll_once():
         known_clips = []
 
         for broadcaster_id in known_ids:
+
             try:
                 streamer_clips = collect_known_streamer_clips(
                     broadcaster_id,
@@ -546,20 +628,21 @@ def poll_once():
                 )
 
                 for clip in streamer_clips:
+
                     if clip.get("game_id") == game_id:
                         known_clips.append(clip)
 
             except requests.RequestException as error:
                 print(
-                    f"Erreur de récupération pour "
-                    f"{known_streamers.get(broadcaster_id, broadcaster_id)}: "
-                    f"{error}"
+                    "Erreur de récupération streamer :",
+                    error
                 )
 
-        # Fusion et suppression des doublons.
+        # Fusion et dédoublonnage.
         all_clips = {}
 
         for clip in category_clips + known_clips:
+
             clip_id = clip.get("id")
 
             if clip_id:
@@ -604,6 +687,7 @@ def poll_once():
         return result
 
     except Exception as error:
+
         state["last_error"] = str(error)
 
         print("Erreur pendant la recherche :", error)
@@ -615,31 +699,31 @@ def poll_once():
 
 
 # ============================================================
-# RECHERCHE AUTOMATIQUE EN ARRIÈRE-PLAN
+# 11. RECHERCHE AUTOMATIQUE
 # ============================================================
 
 def poll_loop():
+
     time.sleep(10)
 
     while True:
+
         try:
             poll_once()
 
         except Exception as error:
-            print(
-                "Erreur dans le système automatique :",
-                error
-            )
+            print("Erreur système automatique :", error)
 
         time.sleep(POLL_INTERVAL)
 
 
 # ============================================================
-# ROUTES API
+# 12. ROUTES API
 # ============================================================
 
 @app.on_event("startup")
 def startup_event():
+
     init_database()
 
     thread = threading.Thread(
@@ -650,14 +734,15 @@ def startup_event():
     thread.start()
 
     print("Twitch GTA VI Radar démarré.")
-    print(f"Fenêtre de recherche : {LOOKBACK_HOURS} heures.")
-    print(f"Minimum de vues : {MIN_VIEWS}.")
-    print(f"Intervalle automatique : {POLL_INTERVAL} secondes.")
-    print(f"Streamers suivis : {sorted(KNOWN_STREAMERS)}")
+    print("Fenêtre :", LOOKBACK_HOURS, "heures")
+    print("Minimum de vues :", MIN_VIEWS)
+    print("Intervalle :", POLL_INTERVAL, "secondes")
+    print("Streamers :", sorted(KNOWN_STREAMERS))
 
 
 @app.get("/")
 def home():
+
     return {
         "service": "Twitch GTA VI Clipping Radar",
         "status": "online",
@@ -670,6 +755,7 @@ def home():
 
 @app.get("/health")
 def health():
+
     return {
         "ok": True,
         "service": "twitch-gta6-radar",
@@ -685,10 +771,12 @@ def health():
 
 @app.post("/poll")
 def manual_poll():
+
     try:
         return poll_once()
 
     except Exception as error:
+
         print("Erreur POST /poll :", error)
 
         raise HTTPException(
@@ -706,9 +794,11 @@ def get_clips(
         pattern="^(all|known|discovery)$"
     )
 ):
+
     connection = get_connection()
 
     try:
+
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=LOOKBACK_HOURS)
 

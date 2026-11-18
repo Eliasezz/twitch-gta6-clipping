@@ -2,8 +2,8 @@
 import re
 from pathlib import Path
 
-_ASS_STAMP = re.compile(r"^(\\d+):(\\d{1,2}):(\\d{2})\\.(\\d{2})$")
-_ASS_OVERRIDE = re.compile(r"\\{[^}]*\\}")
+_ASS_STAMP = re.compile(r"^(\d+):(\d{1,2}):(\d{2})\.(\d{2})$")
+_ASS_OVERRIDE = re.compile(r"\{[^}]*\}")
 
 
 def _ass_to_ms(value):
@@ -40,7 +40,7 @@ def ass_to_srt(ass_path, srt_path):
         except ValueError:
             continue
         content = _ASS_OVERRIDE.sub("", fields[9])
-        content = content.replace(r"\\N", " ").replace(r"\\h", " ").strip()
+        content = content.replace(r"\N", " ").replace(r"\h", " ").strip()
         if end <= start or not content:
             continue
         entries.append((start, end, content))

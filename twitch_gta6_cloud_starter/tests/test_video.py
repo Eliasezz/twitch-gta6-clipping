@@ -68,6 +68,25 @@ class VideoWorkflowTests(unittest.TestCase):
             job = routes._read_status(created["job_id"])
             self.assertEqual(job["source_type"], "original_synthetic")
 
+    def test_demo_worker_renders_actual_mp4_without_upload(self):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("FFmpeg unavailable")
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            routes, "VIDEO_DIR", Path(directory)
+        ), patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "test-secret"}):
+            response = routes.create_demo_job(
+                background_tasks=BackgroundTasks(),
+                clip_seconds=3, x_admin_token="test-secret"
+            )
+            job_id = response["job_id"]
+            routes._demo_worker(job_id, 3)
+            status = routes._read_status(job_id)
+            self.assertEqual(status["state"], "done", status)
+            self.assertEqual(status["result"]["width"], 360)
+            self.assertEqual(status["result"]["height"], 640)
+            self.assertTrue(status["download_endpoint"].endswith("/download"))
+            self.assertTrue((Path(directory) / job_id / "vertical.mp4").is_file())
+
     def test_demo_rejects_missing_token(self):
         with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "test-secret"}):
             with self.assertRaises(HTTPException) as error:

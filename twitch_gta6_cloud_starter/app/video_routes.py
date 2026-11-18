@@ -88,13 +88,25 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
     folder = _job_dir(job_id)
     with _render_lock:
         status = _read_status(job_id)
-        status["state"] = "processing"
+        status.update({"state": "running", "progress": 5, "stage": "verifying_source"})
         _write_status(folder, status)
         try:
+            from .media_integrity import validate_source, sha256_file, IntegrityError
             source = folder / "source.mp4"
+            if source.is_symlink() or source.resolve().parent != folder.resolve():
+                raise VideoPipelineError("Input media is not isolated within its own job")
+            provenance = validate_source(source)
+            status.update({"source_provenance": provenance, "progress": 12,
+                           "stage": "selecting_highlights"})
+            _write_status(folder, status)
             output = folder / "vertical.mp4"
             chat_file = folder / "chat-seconds.json"
-            chat_seconds = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else ()
+            try:
+                chat_data = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else []
+                chat_seconds = chat_data if isinstance(chat_data, list) else []
+            except (json.JSONDecodeError, OSError):
+                chat_seconds = []
+                status["chat_warning"] = "Invalid optional chat JSON ignored"
             shorts = status.get("shorts", False)
             if shorts:
                 width, height = 1080, 1920
@@ -118,20 +130,31 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
                                     face_bottom_left=status.get("face_bottom_left", False),
                                     voiceover=not shorts and status.get("voiceover", False),
                                     vision_enabled=status.get("vision_enabled", False))
+                clip["job_id"] = job_id
+                clip["source_sha256"] = provenance["source_sha256"]
                 clips.append(clip)
+                status.update({"progress": round(12 + 78 * (index + 1) / count),
+                               "stage": f"validated_clip_{index + 1}_of_{count}"})
+                _write_status(folder, status)
+            if sha256_file(source) != provenance["source_sha256"]:
+                raise VideoPipelineError("Input video changed during editing")
             result = dict(clips[0])
             if count > 1:
                 result["clips"] = clips
-            status.update({"state": "done", "result": result,
+            status.update({"state": "done", "progress": 100,
+                           "stage": "verified_and_ready", "result": result,
                            "publication_status": "review_required",
                            "transcription_warning": result.get("transcription_warning"),
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
         except Exception as error:
-            # Mark all worker failures, including subprocess timeouts, as failed.
-            status.update({"state": "failed", "error": type(error).__name__})
+            # Fail without ever generating or reusing media from another job.
+            status.update({"state": "failed", "stage": "failed",
+                           "error": type(error).__name__})
             for partial in folder.glob("vertical*.mp4"):
                 partial.unlink(missing_ok=True)
             if isinstance(error, (CaptionError, VideoPipelineError)):
+                status["error_detail"] = str(error)[-420:]
+            elif isinstance(error, IntegrityError):
                 status["error_detail"] = str(error)
             elif isinstance(error, subprocess.SubprocessError):
                 status["error_detail"] = "FFmpeg a interrompu le montage de cette source."
@@ -491,7 +514,16 @@ def download_video_job(job_id: str, x_admin_token: str | None = Header(default=N
     output = _job_dir(job_id) / "vertical.mp4"
     if status.get("state") != "done" or not output.is_file():
         raise HTTPException(409, "MP4 is not available yet")
-    return FileResponse(output, media_type="video/mp4", filename=f"gta6-highlight-{job_id[:8]}.mp4")
+    if output.is_symlink() or output.resolve().parent != _job_dir(job_id).resolve():
+        raise HTTPException(409, "MP4 does not belong to this job")
+    expected = ((status.get("result") or {}).get("output_validation") or {}).get("output_sha256")
+    if expected:
+        from .media_integrity import sha256_file
+        if sha256_file(output) != expected:
+            raise HTTPException(409, "Saved MP4 has changed since verification")
+    return FileResponse(output, media_type="video/mp4",
+                        filename=f"gta6-highlight-{job_id[:8]}.mp4",
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/jobs/{job_id}/publication", tags=["publishing-review"])

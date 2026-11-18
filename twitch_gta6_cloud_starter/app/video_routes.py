@@ -1,0 +1,152 @@
+"""Authenticated video upload -> background MP4 render -> private download API."""
+import hmac
+import json
+import os
+import shutil
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+
+from .video_pipeline import VideoPipelineError, render_mp4, probe
+
+router = APIRouter(prefix="/video", tags=["video-workflow"])
+VIDEO_DIR = Path(os.getenv("VIDEO_STORAGE_DIR", "/data/videos"))
+MAX_UPLOAD_BYTES = min(120, max(1, int(os.getenv("VIDEO_MAX_UPLOAD_MB", "75")))) * 1024 * 1024
+_render_lock = threading.Lock()
+
+
+def _authorize(token):
+    secret = os.getenv("POLL_ADMIN_TOKEN", "").strip()
+    if not secret:
+        raise HTTPException(503, "Configure POLL_ADMIN_TOKEN in Render to enable video jobs")
+    if not token or not hmac.compare_digest(token, secret):
+        raise HTTPException(401, "Invalid administrator token")
+
+
+def _job_dir(job_id):
+    try:
+        if str(uuid.UUID(job_id)) != job_id:
+            raise ValueError()
+    except ValueError as exc:
+        raise HTTPException(404, "Unknown video job") from exc
+    return VIDEO_DIR / job_id
+
+
+def _write_status(job_dir, payload):
+    job_dir.mkdir(parents=True, exist_ok=True)
+    temp_file = job_dir / "status.tmp"
+    temp_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temp_file.replace(job_dir / "status.json")
+
+
+def _read_status(job_id):
+    status_file = _job_dir(job_id) / "status.json"
+    if not status_file.exists():
+        raise HTTPException(404, "Unknown video job")
+    try:
+        return json.loads(status_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(500, "Video job metadata unavailable") from exc
+
+
+def _worker(job_id, caption_text, clip_seconds):
+    folder = _job_dir(job_id)
+    with _render_lock:
+        status = _read_status(job_id)
+        status["state"] = "processing"
+        _write_status(folder, status)
+        try:
+            source = folder / "source.mp4"
+            output = folder / "vertical.mp4"
+            probe(source)
+            result = render_mp4(source, output, caption_text=caption_text,
+                                clip_seconds=clip_seconds)
+            status.update({"state": "done", "result": result,
+                           "download_endpoint": f"/video/jobs/{job_id}/download"})
+        except (VideoPipelineError, OSError, ValueError) as error:
+            status.update({"state": "failed", "error": type(error).__name__})
+            print("Video job failed:", job_id, type(error).__name__, str(error)[-500:])
+        finally:
+            (folder / "source.mp4").unlink(missing_ok=True)
+            _write_status(folder, status)
+
+
+@router.get("/ready")
+def video_ready():
+    return {
+        "available": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
+        "configured_for_private_jobs": bool(os.getenv("POLL_ADMIN_TOKEN", "").strip()),
+        "workflow": "authorized-file-upload -> audio-activity highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
+        "auto_speech_transcription": False,
+        "automatic_social_publishing": False,
+    }
+
+
+@router.post("/jobs", status_code=202)
+def create_video_job(background_tasks: BackgroundTasks,
+                     video: UploadFile = File(...),
+                     authorized: bool = Form(False),
+                     caption_text: str = Form(""),
+                     clip_seconds: int = Form(25),
+                     x_admin_token: str | None = Header(default=None)):
+    _authorize(x_admin_token)
+    if not authorized:
+        raise HTTPException(403, "Confirm you own this media or have explicit reuse permission")
+    if clip_seconds < 3 or clip_seconds > 45:
+        raise HTTPException(422, "clip_seconds must be 3 to 45")
+    if len(caption_text) > 5000:
+        raise HTTPException(413, "Caption text too long")
+    if not (video.filename or "").lower().endswith((".mp4", ".mov", ".mkv")):
+        raise HTTPException(415, "Upload an MP4, MOV, or MKV video")
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(VIDEO_DIR).free < MAX_UPLOAD_BYTES * 2:
+        raise HTTPException(507, "Insufficient disk space for this upload")
+
+    job_id = str(uuid.uuid4())
+    folder = _job_dir(job_id)
+    folder.mkdir(parents=True, exist_ok=False)
+    source = folder / "source.mp4"
+    amount = 0
+    try:
+        with source.open("wb") as destination:
+            while True:
+                block = video.file.read(1024 * 1024)
+                if not block:
+                    break
+                amount += len(block)
+                if amount > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "Video exceeds configured upload limit")
+                destination.write(block)
+        if amount < 1024:
+            raise HTTPException(422, "Video file is empty or too small")
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    finally:
+        video.file.close()
+
+    status = {"job_id": job_id, "state": "queued", "created_at": datetime.now(timezone.utc).isoformat(),
+              "input_bytes": amount, "authorized": True}
+    _write_status(folder, status)
+    background_tasks.add_task(_worker, job_id, caption_text, clip_seconds)
+    return status
+
+
+@router.get("/jobs/{job_id}")
+def get_video_job(job_id: str, x_admin_token: str | None = Header(default=None)):
+    _authorize(x_admin_token)
+    return _read_status(job_id)
+
+
+@router.get("/jobs/{job_id}/download")
+def download_video_job(job_id: str, x_admin_token: str | None = Header(default=None)):
+    _authorize(x_admin_token)
+    status = _read_status(job_id)
+    output = _job_dir(job_id) / "vertical.mp4"
+    if status.get("state") != "done" or not output.is_file():
+        raise HTTPException(409, "MP4 is not available yet")
+    return FileResponse(output, media_type="video/mp4", filename=f"gta6-highlight-{job_id[:8]}.mp4")

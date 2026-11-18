@@ -273,6 +273,15 @@ input[type=password],input[type=number],input[type=text],input[type=file],select
 input[type=checkbox]{width:20px;height:20px;vertical-align:middle}
 button,.download{display:inline-block;margin-top:19px;padding:12px 18px;background:#6179ff;color:white;border:0;border-radius:9px;font-weight:700;font-size:15px;cursor:pointer}
 button:disabled{opacity:.5;cursor:not-allowed}
+[hidden]{display:none!important}
+.controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.controls input{flex:1;min-width:220px}
+button.secondary{background:#313f5f;margin-top:0}
+button.secondary:hover{background:#40537e}
+#jobPanel{margin-top:20px;padding:15px;background:#101d2c;border:1px solid #485c79;border-radius:11px}
+#jobId{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+details{margin-top:18px}
+summary{cursor:pointer;color:#c8d7fa;font-weight:650}
 progress{margin-top:18px;width:100%;height:20px}
 #status{white-space:pre-line;margin-top:18px;padding:12px;background:#0c1420;border-radius:9px}
 .muted{font-size:13px;color:#a7b6c9}.ok{color:#8ce9ae}.err{color:#ff9a9a}
@@ -282,7 +291,12 @@ progress{margin-top:18px;width:100%;height:20px}
 <h1>GTA VI — Montage automatique</h1>
 <p>Envoie une vidéo autorisée (jusqu'à 300 Mo) ; le serveur la reçoit en morceaux, sélectionne un extrait, ajoute sous-titres anglais et musique, puis génère un MP4 de 65 secondes et un ZIP prêt à publier.</p>
 <label for="token">X-Admin-Token (depuis Render → Environment → POLL_ADMIN_TOKEN)</label>
-<input id="token" type="password" autocomplete="off" placeholder="Jeton privé, jamais sauvegardé">
+<div class="controls">
+<input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Jeton privé, jamais sauvegardé">
+<button class="secondary" id="toggleToken" type="button" aria-label="Afficher ou masquer le token">Afficher</button>
+<button class="secondary" id="copyToken" type="button">Copier le token saisi</button>
+</div>
+<p class="muted">Le token est uniquement celui que tu colles ici. Le serveur ne révèle jamais POLL_ADMIN_TOKEN. Évite de partager ton presse-papiers.</p>
 <label for="video">Vidéo source (MP4, MOV ou MKV)</label><input id="video" type="file" accept=".mp4,.mov,.mkv,video/*">
 <label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="65">
 <label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
@@ -293,6 +307,22 @@ progress{margin-top:18px;width:100%;height:20px}
 <button id="send">Envoyer et monter la vidéo</button>
 <progress id="progress" max="100" value="0" hidden></progress>
 <div id="status" role="status" aria-live="polite">Aucune vidéo envoyée.</div>
+<section id="jobPanel" hidden aria-label="Identifiant de montage">
+<label for="jobId">job_id — identifiant de ta vidéo</label>
+<div class="controls">
+<input id="jobId" type="text" readonly spellcheck="false" aria-label="Job ID à copier">
+<button class="secondary" id="copyJob" type="button">Copier le job_id</button>
+</div>
+<p class="muted">Garde cet identifiant pour récupérer le montage, même après avoir fermé cette page.</p>
+</section>
+<details>
+<summary>J'ai déjà un job_id — retrouver le montage</summary>
+<label for="existingJob">Coller un ancien job_id</label>
+<div class="controls">
+<input id="existingJob" type="text" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
+<button class="secondary" id="resumeJob" type="button">Vérifier ce job_id</button>
+</div>
+</details>
 <div id="result"></div>
 <p class="muted">Aucun mot de passe n'est enregistré dans le navigateur. Les vidéos de test ne sont pas publiées automatiquement. Les fichiers terminés sont temporaires (48 h par défaut).</p>
 </main>
@@ -300,7 +330,47 @@ progress{margin-top:18px;width:100%;height:20px}
 (function(){
  const el=id=>document.getElementById(id);
  const send=el('send'), status=el('status'), result=el('result'), progress=el('progress');
+ const jobField=el('jobId'), jobPanel=el('jobPanel');
  function show(message,error){status.textContent=message;status.className=error?'err':'ok'}
+ function showJob(job){
+   jobField.value=job;
+   jobPanel.hidden=false;
+ }
+ async function copyText(value){
+   if(!value)throw Error('Aucune valeur à copier.');
+   if(navigator.clipboard&&navigator.clipboard.writeText){
+     await navigator.clipboard.writeText(value);
+     return;
+   }
+   // Safari compatibility, without saving anything to localStorage/cookies.
+   const temp=document.createElement('textarea');
+   temp.value=value;
+   temp.setAttribute('readonly','');
+   temp.style.position='fixed';temp.style.left='-9999px';
+   document.body.appendChild(temp);
+   temp.select();
+   const success=document.execCommand('copy');
+   temp.remove();
+   if(!success)throw Error('Copie impossible : sélectionne la valeur puis fais Cmd+C.');
+ }
+ async function copyButton(button,value,label){
+   try{
+     await copyText(value);
+     button.textContent='Copié !';
+     window.setTimeout(()=>{button.textContent=label},1800);
+   }catch(e){show(e.message,true)}
+ }
+ el('toggleToken').addEventListener('click',()=>{
+   const input=el('token'), visible=input.type==='text';
+   input.type=visible?'password':'text';
+   el('toggleToken').textContent=visible?'Afficher':'Masquer';
+ });
+ el('copyToken').addEventListener('click',()=>{
+   copyButton(el('copyToken'),el('token').value.trim(),'Copier le token saisi');
+ });
+ el('copyJob').addEventListener('click',()=>{
+   copyButton(el('copyJob'),jobField.value,'Copier le job_id');
+ });
  async function api(path,options){
    const token=el('token').value.trim();
    const headers=Object.assign({'X-Admin-Token':token},options&&options.headers||{});
@@ -326,6 +396,7 @@ progress{margin-top:18px;width:100%;height:20px}
    }
  }
  async function monitor(job){
+   showJob(job);
    for(let count=0;count<180;count++){
      const state=await api('/video/jobs/'+job);
      show('Job : '+job+'\nStatut : '+state.state+'\n'+
@@ -344,6 +415,16 @@ progress{margin-top:18px;width:100%;height:20px}
    }
    show('Montage encore en cours. Note ton job_id pour vérifier son statut : '+job);
  }
+ el('resumeJob').addEventListener('click',async()=>{
+   const token=el('token').value.trim(),job=el('existingJob').value.trim();
+   if(!token){show("Colle ton token d'administration dans le champ en haut.",true);return}
+   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(job)){
+     show('job_id incorrect : colle l’identifiant complet de ta vidéo.',true);return;
+   }
+   const button=el('resumeJob');button.disabled=true;result.replaceChildren();
+   try{await monitor(job)}catch(e){show('Erreur : '+e.message,true)}
+   finally{button.disabled=false}
+ });
  send.addEventListener('click',async()=>{
    const file=el('video').files[0],token=el('token').value.trim();
    if(!token){show('Copie POLL_ADMIN_TOKEN depuis Render.',true);return}
@@ -361,6 +442,7 @@ progress{margin-top:18px;width:100%;height:20px}
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
      const started=await api('/video/uploads/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
      const job=started.job_id,chunkSize=started.chunk_size_bytes;
+     showJob(job);
      show('Upload créé : '+job+'. Envoi en cours…');
      let index=0;
      for(let offset=0;offset<file.size;offset+=chunkSize,index++){

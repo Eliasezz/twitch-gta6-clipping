@@ -28,7 +28,8 @@ def publication_package(job_id, job_state):
         "channels": ["tiktok", "youtube"],
         "ready": job_state.get("state") == "done"
                  and job_state.get("authorized") is True
-                 and job_state.get("demo") is not True,
+                 and job_state.get("demo") is not True
+                 and job_state.get("subtitles_pending") is not True,
         "status": job_state.get("publication_status", "review_required"),
         "automatic_publication": False,
         "requirements": [

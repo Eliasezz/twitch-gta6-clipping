@@ -450,6 +450,8 @@ def metricool_temporary_media_transfer(job_id: str, token: str):
 def _sign_export(job_id, expires):
     """A signed download URL is independent of the admin token and expires."""
     token = os.getenv("POLL_ADMIN_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(503, "Package downloads require a configured admin token")
     data = f"video-export:{job_id}:{int(expires)}".encode("utf-8")
     return hmac.new(token.encode("utf-8"), data, hashlib.sha256).hexdigest()
 

@@ -1,0 +1,32 @@
+name: Python validation
+
+on:
+  pull_request:
+    paths:
+      - "twitch_gta6_cloud_starter/**"
+      - ".github/workflows/python-validation.yml"
+  push:
+    branches:
+      - main
+      - "audit/**"
+    paths:
+      - "twitch_gta6_cloud_starter/**"
+      - ".github/workflows/python-validation.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: twitch_gta6_cloud_starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: twitch_gta6_cloud_starter/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python sources
+        run: python -m compileall -q app

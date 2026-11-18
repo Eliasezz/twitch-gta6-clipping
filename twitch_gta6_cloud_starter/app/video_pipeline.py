@@ -139,18 +139,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return bool(lines)
 
 
-def render_mp4(source, destination, *, caption_text="", clip_seconds=25, width=720, height=1280,
+def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
                dynamic_zoom=True):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
-    if clip_seconds < 3 or clip_seconds > 45:
-        raise VideoPipelineError("clip_seconds must be between 3 and 45")
+    if clip_seconds < 3 or clip_seconds > 90:
+        raise VideoPipelineError("clip_seconds must be between 3 and 90")
     if (width, height) not in {(360, 640), (540, 960), (720, 1280)}:
         raise VideoPipelineError("Unsupported output format")
     info = probe(source)
     if info["duration"] > 900:
         raise VideoPipelineError("Source exceeds 15-minute processing limit")
+    # Never fake a minute-long eligible-looking clip by stretching or looping short footage.
+    if clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
+        raise VideoPipelineError(
+            f"Source is only {info['duration']:.1f} seconds; upload at least {clip_seconds} seconds of footage"
+        )
     duration = min(float(clip_seconds), info["duration"])
     start, selection = pick_highlight_start(source, info["duration"], duration)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -173,12 +178,12 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=25, width=7
         _check_binary("ffmpeg"), "-hide_banner", "-nostdin", "-y",
         "-ss", str(start), "-i", str(source), "-t", str(duration),
         "-map", "0:v:0", "-map", "0:a:0?", "-vf", ",".join(filters),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
+        "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast", "-crf", "25",
         "-pix_fmt", "yuv420p", "-r", "24", "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart", "-shortest", str(destination)
     ]
     try:
-        _execute(command, timeout=270)
+        _execute(command, timeout=720 if duration >= 45 else 270)
         output_info = probe(destination)
         if output_info["width"] != width or output_info["height"] != height:
             raise VideoPipelineError("Output geometry failed validation")
@@ -193,6 +198,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=25, width=7
             "width": width, "height": height, "fps": 24,
             "caption_mode": "approximate_supplied_text" if has_captions else "none",
             "dynamic_zoom": dynamic_zoom,
+            "minute_plus": output_info["duration"] > 60.0,
         }
     finally:
         ass_file.unlink(missing_ok=True)

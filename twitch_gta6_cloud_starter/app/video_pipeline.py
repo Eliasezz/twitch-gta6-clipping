@@ -77,6 +77,10 @@ def make_ass(caption_text, duration, destination, width=720, height=1280,
     words = re.findall(r"\S+", caption_text or "")[:160]
     if not words and not timed_words and not hook_text:
         return False
+    font_size = max(28, int(width * 0.07))
+    hook_font = max(26, int(width * 0.057))
+    safe_bottom = int(height * 0.30)
+    safe_top = int(height * 0.12)
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -85,17 +89,17 @@ ScaledBorderAndShadow: yes
 WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hype,DejaVu Sans,54,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,2,35,35,220,1
-Style: Hook,DejaVu Sans,44,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,8,45,45,140,1
+Style: Hype,DejaVu Sans,{font_size},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,2,60,100,{safe_bottom},1
+Style: Hook,DejaVu Sans,{hook_font},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,8,60,100,{safe_top},1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     extras = []
     if hook_text:
-        hook = _ass_escape(str(hook_text).upper())[:80]
+        hook = _ass_escape(" ".join(str(hook_text).split()[:7]).upper())[:72]
         if hook:
             extras.append(
-                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 3.2))},Hook,,0,0,0,,{hook}"
+                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 1.5))},Hook,,0,0,0,,{hook}"
             )
     if timed_words:
         # Each event starts/ends at the ASR word boundaries. Show 3-word
@@ -183,6 +187,8 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         start, analysis = 0.0, {}
     else:
         start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
+    if face_bottom_left and duration < 5:
+        raise VideoPipelineError("Webcam split layout needs at least 5 seconds")
     if (rhythmic or face_bottom_left) and duration >= 5 and not prepared:
         from .rhythm import assemble
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -304,7 +310,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         audio_out = "[mixed]"
     if voice_ready:
         # Optional original text-to-speech is layered after ducking.
-        index = 2 if music_enabled else 1
+        index = 2 if (music_enabled or not info["has_audio"]) else 1
         tracks += [
             f"[{index}:a:0]volume=1.0[voiceover]",
             f"{audio_out}[voiceover]amix=inputs=2:duration=first:normalize=0[withvoice]",

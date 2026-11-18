@@ -23,7 +23,8 @@ jobs:
           if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
             echo "Using FFmpeg provided by the 24.04 GitHub runner"
           else
-            sudo timeout 75 apt-get -o Acquire::Retries=0 install -y -qq ffmpeg
+            sudo timeout 75 apt-get -o Acquire::Retries=0 update -qq
+            sudo timeout 90 apt-get -o Acquire::Retries=0 install -y -qq --no-install-recommends ffmpeg
           fi
           ffmpeg -version | head -1
           ffprobe -version | head -1

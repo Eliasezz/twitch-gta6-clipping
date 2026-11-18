@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from app import captions
+from app import highlight
 from app import publishing
 from app import video_pipeline
 from app import video_routes
@@ -68,6 +69,24 @@ class CaptionTests(unittest.TestCase):
         self.assertIn("0:00:00.12", data)
         self.assertIn("0:00:00.52", data)
         self.assertIn("H0000EFFF", data)
+
+    def test_keyword_window_prefers_excited_reaction(self):
+        words = [
+            {"word": "hello", "start": 2, "end": 2.4},
+            {"word": "everyone", "start": 5, "end": 5.4},
+            {"word": "no", "start": 67, "end": 67.2},
+            {"word": "way", "start": 67.3, "end": 67.6},
+            {"word": "wow", "start": 69, "end": 69.5},
+            {"word": "insane", "start": 71, "end": 71.5},
+        ]
+        start, score = highlight.choose_speech_window(
+            words, source_seconds=140, clip_seconds=65
+        )
+        self.assertGreater(start, 0)
+        self.assertLessEqual(start, 67)
+        self.assertGreater(score["reaction_score"], 0)
+        aligned = highlight.window_words(words, start, 65)
+        self.assertTrue(all(0 <= w["start"] < 65 for w in aligned))
 
     def test_asr_requires_key_before_video_upload(self):
         with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "admin", "OPENAI_API_KEY": ""}):

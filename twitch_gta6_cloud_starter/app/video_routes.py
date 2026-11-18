@@ -100,6 +100,7 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_sub
                                 hook_text=hook_text)
             status.update({"state": "done", "result": result,
                            "publication_status": "review_required",
+                           "transcription_warning": result.get("transcription_warning"),
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
         except Exception as error:
             # Mark all worker failures, including subprocess timeouts, as failed.
@@ -151,6 +152,55 @@ def _demo_worker(job_id: str, clip_seconds: int):
         status.update({"state": "failed", "error": type(error).__name__})
         _write_status(folder, status)
         print("Synthetic video demo failed:", job_id, type(error).__name__)
+
+
+def recover_failed_video_jobs_on_startup():
+    """Retry only the user-requested failed jobs, once, with their retained files.
+
+    VIDEO_RECOVER_FAILED_JOB_IDS is a comma-separated, non-secret list of
+    previously failed job IDs. Never creates a duplicate and cannot publish.
+    """
+    ids = [
+        token.strip() for token in
+        os.getenv("VIDEO_RECOVER_FAILED_JOB_IDS", "").split(",")
+        if token.strip()
+    ][:3]
+    recovered = []
+    for job_id in ids:
+        try:
+            folder = _job_dir(job_id)
+            source = folder / "source.mp4"
+            status = _read_status(job_id)
+            if not (
+                status.get("state") == "failed"
+                and status.get("authorized") is True
+                and status.get("error") == "CaptionError"
+                and not status.get("auto_recovery_attempted_at")
+                and source.is_file()
+            ):
+                continue
+            status["state"] = "queued"
+            status["auto_recovery_attempted_at"] = datetime.now(timezone.utc).isoformat()
+            status["previous_error"] = status.pop("error", None)
+            status["publication_status"] = "not_ready"
+            _write_status(folder, status)
+            thread = threading.Thread(
+                target=_worker,
+                args=(job_id, "", int(status.get("requested_duration_seconds", 65))),
+                kwargs={
+                    "auto_subtitles": bool(status.get("auto_subtitles_requested", False)),
+                    "music_enabled": bool(status.get("music_original_generated", True)),
+                    "hook_text": str(status.get("hook_text") or "GTA VI | BIG REACTION"),
+                },
+                daemon=True,
+                name="recover-caption-job-" + job_id[:8],
+            )
+            thread.start()
+            recovered.append(job_id)
+            print("Automatically resumed failed caption job:", job_id)
+        except (OSError, ValueError, HTTPException) as error:
+            print("Caption recovery skipped:", job_id, type(error).__name__)
+    return recovered
 
 
 @router.post("/demo", status_code=202)

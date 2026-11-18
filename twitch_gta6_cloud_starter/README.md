@@ -474,3 +474,70 @@ API transcription credits.
 On Render's 512 MB service, normal video edits now default to **540×960**
 vertical resolution (still suitable for short-form platforms), whereas the
 original synthetic demos use 360×640 to reduce memory and CPU load.
+
+
+## Professional short editing v1 (30-second default)
+
+The upload page `/video/uploader` selects **30 seconds** by default (you
+can still request 20–45 or 65 seconds). A selected highlight can produce
+1–3 distinct clips, with the previous optional chat JSON and OpenAI visual
+ranking. The best moment is an estimate from **sampled** speech-energy,
+frame-change, pitch and optional real chat timestamps; it is *not* a reliable
+neural emotion or viral-success predictor.
+
+In source-only rhythmic mode, the app constructs a **1.2-second cold open
+from the selected real peak** followed by genuine 2–2.4-second context shots.
+The same source peak may reappear later for narrative continuity; it never
+loads demo/test footage into a user job. Blurred margins are derived from
+the same frame; optional two-pane gameplay/webcam crop is available only
+when the user confirms webcam is actually bottom-left in their source.
+The output adds the supplied seven-word hook within 1.5s and timed,
+yellow-highlighted English subtitles if a genuine transcript is available.
+A missing transcription returns an explicit warning rather than fabricated
+dialogue. Optional ChatGPT/OpenAI visual analysis is billed separately.
+
+The soundtrack is synthesized locally, rather than downloaded from TikTok:
+FFmpeg's `sidechaincompress` ducks this bed under original speech, while
+`loudnorm=I=-14:TP=-1.5:LRA=11` aims for Shorts-friendly loudness. Media
+with no audio receives generated **silence** (or the original generated
+music if requested), so every MP4 contains an AAC track.
+
+### Render output presets and verification
+
+Default 720x1280 is recommended on 0.5-CPU/512MB Render instances.
+1080x1920 Full HD is available as an **explicit** choice and may require
+a larger Render plan for smooth encoding. A 360p source cannot become
+genuine 1080p detail by enlarging it.
+
+All real source media is in `VIDEO_STORAGE_DIR/{job_id}/source.mp4`.
+Intermediate cuts are created under that same job's temporary directory,
+which is removed after editing. No shared media fallback or global cache.
+Each generated H.264/AAC MP4 is inspected with ffprobe for correct dimensions,
+duration, codec and audio/video stream-start alignment. Short black/frozen
+boundary candidates are reported as editorial warnings, since dark or
+static gameplay can be legitimate. Source/output SHA-256 values are recorded
+per job and rechecked when a user downloads the individual MP4 or ZIP.
+A missing/corrupt output yields a clear error; it never shows footage from
+another job. The source is deleted after successful rendering, but final
+MP4/ZIP files remain temporarily downloadable.
+
+This is a **prototype**, not a production media farm: FastAPI background
+tasks and 1GB disk are not a durable queue for concurrent hour-long VODs.
+An actual Redis/job queue, persistent object storage and per-shot processing
+progress would be the next operational upgrade. Real J/L overlap transitions,
+automatic detection of webcam placement and measured emotion classification
+are **not** guaranteed; this prototype focuses on truthful source-only
+montage, editable hook, 2.4s cuts and file safety.
+
+### FFmpeg notes
+
+- **Input normalization / cut**: `-ss <time> -i source.mp4 -t <duration>`
+  only reads the user's submitted media.
+- **Layout**: `split,scale,crop,boxblur,overlay,setsar=1,fps=24`
+  synthesizes a 9:16 composition using source pixels only.
+- **Sound**: `[bed][voice]sidechaincompress` lowers background music;
+  `loudnorm=I=-14:TP=-1.5:LRA=11` and `alimiter` tame peaks.
+- **Export**: `-c:v libx264 -pix_fmt yuv420p -r 24 -c:a aac
+  -movflags +faststart` produces a broadly compatible MP4.
+- Tests in `tests/test_professional_editor.py` use synthetic testsrc2
+  **only for test input**, never as a replacement when real video is missing.

@@ -1,0 +1,55 @@
+name: Verify live 413 uploader recovery
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verify-live-uploader.yml"
+
+jobs:
+  live-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect public large upload page and secured API routes
+        run: |
+          python3 - <<'PY'
+          import json, time, urllib.request
+          base="https://twitch-gta6-clipping.onrender.com"
+          for attempt in range(15):
+              try:
+                  with urllib.request.urlopen(base+"/video/ready",timeout=25) as f:
+                      ready=json.load(f)
+                  with urllib.request.urlopen(base+"/openapi.json",timeout=25) as f:
+                      schema=json.load(f)
+                  with urllib.request.urlopen(base+"/video/uploader",timeout=25) as f:
+                      html=f.read().decode("utf-8")
+                  required=[
+                      "/video/uploads/start",
+                      "/video/uploads/{job_id}/chunk",
+                      "/video/uploads/{job_id}/finish",
+                      "/video/jobs/{job_id}",
+                      "/video/jobs/{job_id}/export-link",
+                  ]
+                  checks={
+                      "ffmpeg":ready.get("available"),
+                      "admin_token_configured":ready.get("configured_for_private_jobs"),
+                      "openai_auth_detected":ready.get("auto_speech_transcription"),
+                      "browser_upload":ready.get("large_video_uploader"),
+                      "max_mb":ready.get("max_chunked_video_upload_mb"),
+                      "routes":{path:path in schema.get("paths",{}) for path in required},
+                      "contains_chunk_logic": "chunk_size_bytes" in html and "/video/uploads/" in html,
+                  }
+                  print(json.dumps(checks),flush=True)
+                  assert checks["ffmpeg"] is True
+                  assert checks["admin_token_configured"] is True
+                  assert checks["browser_upload"]=="/video/uploader"
+                  assert checks["max_mb"]>=300
+                  assert all(checks["routes"].values())
+                  assert checks["contains_chunk_logic"]
+                  print("SUCCESS: Chunked uploader is deployed on production",flush=True)
+                  break
+              except Exception as e:
+                  print("Validation retry",type(e).__name__,str(e)[:120],flush=True)
+                  time.sleep(8)
+          else:
+              raise RuntimeError("Render browser upload not responding after deploy")
+          PY

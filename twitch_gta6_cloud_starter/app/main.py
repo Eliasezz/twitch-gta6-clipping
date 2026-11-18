@@ -21,8 +21,19 @@ LOOKBACK_HOURS = max(1, int(os.getenv("CLIP_LOOKBACK_HOURS", "24")))
 MIN_VIEWS = max(0, int(os.getenv("MIN_CLIP_VIEWS", "100")))
 
 POLL_INTERVAL = max(60, int(os.getenv("POLL_INTERVAL_SECONDS", "900")))
-MAX_CLIPS = min(100, max(1, int(os.getenv("MAX_CLIPS", "100"))))
-KNOWN_CLIPS_LIMIT = min(100, max(1, int(os.getenv("KNOWN_CLIPS_LIMIT", "20"))))
+# Twitch accepte au maximum 100 éléments par page. La limite totale
+# peut être supérieure : la collecte utilise alors la pagination.
+MAX_CLIPS = min(1000, max(1, int(os.getenv(
+    "MAX_CLIPS_PER_POLL",
+    os.getenv("MAX_CLIPS", "100")
+))))
+KNOWN_CLIPS_LIMIT = min(1000, max(1, int(os.getenv("KNOWN_CLIPS_LIMIT", "20"))))
+
+ALLOWED_BROADCASTER_IDS = {
+    value.strip()
+    for value in os.getenv("ALLOWED_BROADCASTER_IDS", "").split(",")
+    if value.strip()
+}
 
 DB_PATH = os.getenv("DATABASE_PATH", "/data/clips.sqlite3")
 
@@ -354,19 +365,40 @@ def resolve_known_streamers():
 # 7. RÉCUPÉRER LES CLIPS TWITCH
 # ============================================================
 
-def collect_category_clips(game_id, started_at, ended_at):
+def collect_clips_paginated(base_params: dict, limit: int):
+    """Récupère plusieurs pages Twitch sans dépasser la limite configurée."""
+    clips = []
+    cursor = None
+    page_size = min(100, limit)
 
-    data = twitch_get(
-        "clips",
+    while len(clips) < limit:
+        params = dict(base_params)
+        params["first"] = min(page_size, limit - len(clips))
+        if cursor:
+            params["after"] = cursor
+
+        payload = twitch_get("clips", params)
+        page = payload.get("data", [])
+        clips.extend(page)
+
+        pagination = payload.get("pagination") or {}
+        next_cursor = pagination.get("cursor")
+        if not page or not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+    return clips[:limit]
+
+
+def collect_category_clips(game_id, started_at, ended_at):
+    return collect_clips_paginated(
         {
             "game_id": game_id,
             "started_at": started_at,
-            "ended_at": ended_at,
-            "first": MAX_CLIPS
-        }
+            "ended_at": ended_at
+        },
+        MAX_CLIPS
     )
-
-    return data.get("data", [])
 
 
 def collect_known_streamer_clips(
@@ -374,18 +406,14 @@ def collect_known_streamer_clips(
     started_at,
     ended_at
 ):
-
-    data = twitch_get(
-        "clips",
+    return collect_clips_paginated(
         {
             "broadcaster_id": broadcaster_id,
             "started_at": started_at,
-            "ended_at": ended_at,
-            "first": KNOWN_CLIPS_LIMIT
-        }
+            "ended_at": ended_at
+        },
+        KNOWN_CLIPS_LIMIT
     )
-
-    return data.get("data", [])
 
 
 # ============================================================
@@ -462,7 +490,12 @@ def save_clips(clips: list[dict[str, Any]], known_ids: set[str]):
                 else "discovery"
             )
 
-            eligible = 1 if view_count >= MIN_VIEWS else 0
+            # Une vue élevée ne donne pas le droit de réutiliser une vidéo.
+            # L'éligibilité exige aussi une autorisation explicite du créateur.
+            eligible = int(
+                view_count >= MIN_VIEWS
+                and broadcaster_id in ALLOWED_BROADCASTER_IDS
+            )
 
             fetched_at = now.isoformat()
 
@@ -672,7 +705,8 @@ def poll_once():
                 KNOWN_STREAMERS - set(known_streamer_names)
             ),
             "lookback_hours": LOOKBACK_HOURS,
-            "minimum_views": MIN_VIEWS
+            "minimum_views": MIN_VIEWS,
+            "authorized_broadcasters_configured": len(ALLOWED_BROADCASTER_IDS)
         }
 
         state["last_poll"] = datetime.now(
@@ -738,6 +772,8 @@ def startup_event():
     print("Minimum de vues :", MIN_VIEWS)
     print("Intervalle :", POLL_INTERVAL, "secondes")
     print("Streamers :", sorted(KNOWN_STREAMERS))
+    print("Créateurs autorisés :", len(ALLOWED_BROADCASTER_IDS))
+    print("Limite clips par source :", MAX_CLIPS)
 
 
 @app.get("/")
@@ -765,7 +801,9 @@ def health():
         "lookback_hours": LOOKBACK_HOURS,
         "minimum_views": MIN_VIEWS,
         "poll_interval_seconds": POLL_INTERVAL,
-        "known_streamers": sorted(KNOWN_STREAMERS)
+        "known_streamers": sorted(KNOWN_STREAMERS),
+        "authorized_broadcasters_configured": len(ALLOWED_BROADCASTER_IDS),
+        "reuse_gate_enabled": True
     }
 
 
@@ -815,8 +853,7 @@ def get_clips(
         ]
 
         if eligible_only:
-            query += " AND view_count >= ?"
-            params.append(MIN_VIEWS)
+            query += " AND eligible_for_processing = 1"
 
         if source_type != "all":
             query += " AND source_type = ?"

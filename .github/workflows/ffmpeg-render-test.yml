@@ -20,8 +20,8 @@ jobs:
           python-version: "3.12"
       - name: Install FFmpeg and FFprobe
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
+          # Avoid a full apt index refresh, which can hang on runner mirrors.
+          sudo timeout 150 apt-get -o Acquire::Retries=0 install -y -qq ffmpeg
           ffmpeg -version | head -1
           ffprobe -version | head -1
       - name: Install application libraries

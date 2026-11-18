@@ -166,6 +166,61 @@ def create_demo_job(background_tasks: BackgroundTasks,
     return status
 
 
+def start_internal_selftest():
+    """Optional one-time production smoke test; never downloads third-party media."""
+    if os.getenv("VIDEO_SELFTEST_ONCE", "").strip() != "1":
+        return
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    manifest = VIDEO_DIR / "selftest.json"
+    duration = 65
+    job_id = None
+    if manifest.is_file():
+        try:
+            entry = json.loads(manifest.read_text(encoding="utf-8"))
+            job_id = entry["job_id"]
+            previous = _read_status(job_id)
+            if previous.get("state") == "done":
+                print("Video production self-test already passed:", job_id)
+                return
+        except (OSError, KeyError, ValueError, HTTPException):
+            job_id = None
+    if not job_id:
+        job_id = str(uuid.uuid4())
+        folder = _job_dir(job_id)
+        folder.mkdir(parents=True, exist_ok=False)
+        _write_status(folder, {
+            "job_id": job_id, "state": "queued", "demo": True,
+            "source_type": "original_synthetic",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "requested_duration_seconds": duration,
+        })
+        temp = manifest.with_suffix(".tmp")
+        temp.write_text(json.dumps({"job_id": job_id}), encoding="utf-8")
+        temp.replace(manifest)
+    print("Video production self-test started:", job_id)
+    threading.Thread(
+        target=_demo_worker, args=(job_id, duration),
+        daemon=True, name="mp4-production-smoke"
+    ).start()
+
+
+def _selftest_summary():
+    manifest = VIDEO_DIR / "selftest.json"
+    if not manifest.is_file():
+        return {"state": "not_run"}
+    try:
+        job_id = json.loads(manifest.read_text(encoding="utf-8"))["job_id"]
+        status = _read_status(job_id)
+        return {
+            "state": status.get("state", "unknown"),
+            "duration_seconds": (status.get("result") or {}).get("duration_seconds"),
+            "job_id": job_id,
+            "download_endpoint": status.get("download_endpoint"),
+        }
+    except (OSError, ValueError, KeyError, HTTPException):
+        return {"state": "unavailable"}
+
+
 @router.get("/ready")
 def video_ready():
     return {
@@ -177,6 +232,7 @@ def video_ready():
         "recommended_tiktok_duration_seconds": 65,
         "max_clip_duration_seconds": 90,
         "demo_without_upload": "/video/demo",
+        "production_selftest": _selftest_summary(),
     }
 
 

@@ -59,7 +59,9 @@ app = FastAPI(
 
 # The video workflow is isolated from the scheduled Twitch metadata poller.
 from .video_routes import router as video_router
+from .autopilot import router as autopilot_router
 app.include_router(video_router)
+app.include_router(autopilot_router)
 
 
 # ============================================================
@@ -762,6 +764,10 @@ def poll_loop():
 
         try:
             poll_once()
+            # Conditional, rights-gated autopilot; no downloads or posts
+            # unless creator OAuth + Metricool API credentials are present.
+            from .autopilot import run_automatic_after_poll
+            run_automatic_after_poll()
 
         except Exception as error:
             print("Erreur système automatique :", error)
@@ -777,6 +783,8 @@ def poll_loop():
 def startup_event():
 
     init_database()
+    from .autopilot import init_automation_db
+    init_automation_db()
 
     thread = threading.Thread(
         target=poll_loop,
@@ -807,7 +815,8 @@ def home():
         "docs": "/docs",
         "health": "/health",
         "clips": "/clips",
-        "poll": "POST /poll"
+        "poll": "POST /poll",
+        "autopilot": "/automation/status"
     }
 
 

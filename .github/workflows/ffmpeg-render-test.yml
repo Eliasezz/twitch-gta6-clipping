@@ -1,0 +1,35 @@
+name: Real FFmpeg production editor tests
+
+on:
+  pull_request:
+    paths:
+      - "twitch_gta6_cloud_starter/**"
+      - ".github/workflows/ffmpeg-render-test.yml"
+
+jobs:
+  media-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: twitch_gta6_cloud_starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install FFmpeg and FFprobe
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "Using FFmpeg provided by the 24.04 GitHub runner"
+          else
+            sudo timeout 75 apt-get -o Acquire::Retries=0 update -qq
+            sudo timeout 90 apt-get -o Acquire::Retries=0 install -y -qq --no-install-recommends ffmpeg
+          fi
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+      - name: Install application libraries
+        run: pip install -r requirements.txt
+      - name: Real synthetic-source FFmpeg and input edge-case tests
+        run: |
+          python -m unittest discover -s tests -p 'test_integrity_short_editor.py' -v

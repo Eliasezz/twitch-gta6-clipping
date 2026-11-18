@@ -93,7 +93,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     extras = []
     if hook_text:
-        hook = _ass_escape(str(hook_text).upper())[:80]
+        hook = _ass_escape(" ".join(str(hook_text).split()[:7]).upper())[:80]
         if hook:
             extras.append(
                 f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 1.5))},Hook,,0,0,0,,{hook}"
@@ -152,8 +152,10 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
                dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text="",
                subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False, section=(0, 1), face_bottom_left=False, rhythmic=False, prepared=False):
     source, destination = Path(source), Path(destination)
-    if not source.is_file():
-        raise VideoPipelineError("Source video not found")
+    if not source.is_file() or source.is_symlink():
+        raise VideoPipelineError("Source for this job is missing or unsafe")
+    if not source.resolve().is_relative_to(destination.parent.resolve()):
+        raise VideoPipelineError("Source file is outside its own job folder")
     if clip_seconds < 3 or clip_seconds > 90:
         raise VideoPipelineError("clip_seconds must be between 3 and 90")
     if (width, height) not in {(360, 640), (540, 960), (720, 1280), (1080, 1920)}:
@@ -161,7 +163,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     info = probe(source)
     if info["duration"] > MAX_SOURCE_SECONDS:
         raise VideoPipelineError("Source exceeds 12-hour input limit")
-    if not prepared and clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
+    if not prepared and info["duration"] < float(clip_seconds) - 0.1:
         raise VideoPipelineError(
             f"Source is only {info['duration']:.1f} seconds; upload at least {clip_seconds} seconds of footage"
         )
@@ -171,9 +173,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         start, analysis = 0.0, {}
     else:
         start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
-    if rhythmic and duration >= 5:
-        if not info["has_audio"] and not music_enabled:
-            raise VideoPipelineError("Source sans audio. Active la musique pour exporter avec une piste sonore.")
+    if (rhythmic or face_bottom_left) and duration >= 5:
         from .rhythm import active_ranges, assemble, plan
         section_end = info["duration"] * (section[0]+1) / section[1]
         section_begin = info["duration"] * section[0] / section[1]
@@ -257,6 +257,9 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     ]
     if music_enabled:
         command.extend(["-stream_loop", "-1", "-i", str(bed_path)])
+    elif not info["has_audio"]:
+        # Silence is a valid audio track; no unrelated music or footage.
+        command.extend(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"])
     narration = destination.with_suffix(".voice.wav")
     voice_ready = False
     if voiceover and hook_text.strip():
@@ -279,6 +282,8 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         tracks.append("[0:a:0]volume=0.85[src]")
     if music_enabled:
         tracks.append("[1:a:0]volume=0.19[bed]")
+    elif not info["has_audio"]:
+        tracks.append("[1:a:0]volume=1.0[silence]")
     if voice_ready:
         tracks.append(f"[{2 if music_enabled else 1}:a:0]volume=1.4[narr]")
     if prepared and not tracks:
@@ -299,10 +304,13 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
                                 "-map","[m]","-vn","-f","null","-"], timeout=150)
             stats = json.loads(measure.stderr[measure.stderr.rfind("{"):measure.stderr.rfind("}")+1])
             if not math.isfinite(float(stats["input_i"])):
-                raise VideoPipelineError("Le mix audio est silencieux. Active la musique ou choisis une autre source.")
-            for key, field in (("I","i"),("TP","tp"),("LRA","lra"),("thresh","thresh")):
-                target += f":measured_{key}=" + stats["input_"+field]
-            mix += ","+target+":offset="+stats["target_offset"]+":linear=true,aresample=48000"
+                # Silence is expected for a legitimate source without audio.
+                # Do not fabricate speech or fail a playable silent clip.
+                mix += ",aresample=48000"
+            else:
+                for key, field in (("I","i"),("TP","tp"),("LRA","lra"),("thresh","thresh")):
+                    target += f":measured_{key}=" + stats["input_"+field]
+                mix += ","+target+":offset="+stats["target_offset"]+":linear=true,aresample=48000"
         command.extend(["-filter_complex_threads","1","-filter_complex", ";".join(tracks + [mix+"[aout]"]), "-map", "[aout]"])
     command.extend([
         "-vf", ",".join(filters),
@@ -322,8 +330,17 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             raise VideoPipelineError("Export invalide : durée ou piste audio incorrecte.")
         if destination.stat().st_size < 1024:
             raise VideoPipelineError("Output MP4 was unexpectedly small")
+        from .media_integrity import validate_mp4, IntegrityError
+        try:
+            verified = validate_mp4(
+                destination, width=width, height=height, seconds=duration,
+            )
+        except IntegrityError as exc:
+            destination.unlink(missing_ok=True)
+            raise VideoPipelineError("Export verification failed: " + str(exc)) from exc
         return {
             "file": destination.name, "size_bytes": destination.stat().st_size,
+            "output_validation": verified,
             "duration_seconds": round(output_info["duration"], 2),
             "start_seconds": start, "selection_mode": selection,
             "width": width, "height": height, "fps": 24,

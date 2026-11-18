@@ -18,8 +18,22 @@ def export_bundle(job_id, job_dir, status):
     mp4 = folder / "vertical.mp4"
     if status.get("state") != "done" or not mp4.is_file():
         raise ExportError("Edited video is not finished")
-    if mp4.stat().st_size < 1024:
-        raise ExportError("Rendered MP4 is unexpectedly small")
+    if mp4.stat().st_size < 1024 or mp4.is_symlink():
+        raise ExportError("Rendered MP4 is invalid")
+    from .media_integrity import sha256_file
+    clips = (status.get("result") or {}).get("clips")
+    clips = clips if clips else [status.get("result") or {}]
+    for index, detail in enumerate(clips, 1):
+        name = "vertical.mp4" if index == 1 else f"vertical-{index}.mp4"
+        item = folder / name
+        expected = (detail.get("output_validation") or {}).get("output_sha256")
+        if (detail.get("job_id") not in (None, job_id)
+                or detail.get("file") not in (None, name)
+                or not item.is_file() or item.is_symlink()
+                or item.resolve().parent != folder.resolve()):
+            raise ExportError("Clip missing or assigned to another job")
+        if expected and sha256_file(item) != expected:
+            raise ExportError("Clip changed since output verification")
     archive = folder / "ready-to-publish.zip"
     cover = folder / "cover.jpg"
     package = publication_package(job_id, status)

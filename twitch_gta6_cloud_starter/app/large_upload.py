@@ -246,9 +246,12 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
         if info["duration"] > MAX_SOURCE_SECONDS:
             raise HTTPException(422, "Source video exceeds the 12-hour input limit")
         count = meta.get("clip_count", 1)
-        if info["duration"] < 20 * count:
-            raise HTTPException(422, f"La source doit durer au moins {20 * count} secondes pour {count} clip(s).")
-        meta["clip_seconds"] = min(meta["clip_seconds"], int(info["duration"] / count))
+        required = count * int(meta["clip_seconds"])
+        if info["duration"] < required - 0.1:
+            raise HTTPException(
+                422, f"Vidéo trop courte : {info['duration']:.1f} s. "
+                     f"Il faut au moins {required} s pour {count} clip(s) distinct(s)."
+            )
         if meta.get("chat_seconds"):
             (folder / "chat-seconds.json").write_text(json.dumps(meta["chat_seconds"]), encoding="utf-8")
         temp_file.rename(folder / "source.mp4")

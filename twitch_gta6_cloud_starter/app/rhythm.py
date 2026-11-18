@@ -76,16 +76,41 @@ def assemble(source, folder, shots, face, width, height):
             filters = (f"crop=iw/{zoom}:ih/{zoom},scale={width}:{height}:force_original_aspect_ratio=increase,"
                        f"crop={width}:{height}")
         out = Path(folder) / f"shot-{index}.mp4"
-        subprocess.run([
-            "ffmpeg","-v","error","-nostdin","-y","-threads","1","-ss",str(offset),
-            "-i",str(source),"-t",str(length),"-filter_threads","1","-vf",filters+",setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=0.12",
-            "-map","0:v:0","-map","0:a:0?","-c:v","libx264","-threads","2","-pix_fmt","yuv420p",
-            "-preset","ultrafast","-crf","20","-c:a","aac","-ar","48000",str(out)
-        ],check=True,capture_output=True,timeout=180)
+        # Split/overlay requires filter_complex; -vf does not support
+        # multi-chain graphs. Inputs remain exclusively source job media.
+        from .video_pipeline import probe
+        has_audio = probe(source)["has_audio"]
+        command = [
+            "ffmpeg", "-v", "error", "-nostdin", "-y", "-threads", "1",
+            "-ss", str(offset), "-i", str(source),
+        ]
+        if not has_audio:
+            # An actual audio-less source gets silence, never random media.
+            command += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        command += ["-t", str(length), "-filter_threads", "1"]
+        if face:
+            command += ["-filter_complex",
+                        filters + ",setsar=1,fps=24[outv]",
+                        "-map", "[outv]"]
+        else:
+            command += ["-vf", filters + ",setsar=1,fps=24",
+                        "-map", "0:v:0"]
+        command += [
+            "-map", "0:a:0" if has_audio else "1:a:0",
+            "-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p",
+            "-r", "24", "-fps_mode", "cfr", "-preset", "ultrafast", "-crf", "22",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest",
+            str(out),
+        ]
+        subprocess.run(command, check=True, capture_output=True, timeout=180)
         files.append(out)
     listing = Path(folder) / "shots.txt"
     listing.write_text("".join(f"file '{p.name}'\n" for p in files))
     result = Path(folder) / "sequence.mp4"
-    subprocess.run(["ffmpeg","-v","error","-nostdin","-y","-f","concat","-safe","1",
+    subprocess.run(["ffmpeg","-v","error","-nostdin","-y","-f","concat","-safe","0",
                     "-i",str(listing),"-c","copy",str(result)],check=True,capture_output=True,timeout=90)
+    from .video_pipeline import probe
+    rendered = probe(result)
+    if not rendered["has_audio"] or rendered["width"] != width or rendered["height"] != height:
+        raise RuntimeError("The source-only montage has invalid picture or missing audio")
     return result

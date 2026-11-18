@@ -93,6 +93,8 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
         try:
             from .media_integrity import validate_source, sha256_file, IntegrityError
             source = folder / "source.mp4"
+            if not source.is_file():
+                raise VideoPipelineError("Le fichier source de ce job est introuvable.")
             if source.is_symlink() or source.resolve().parent != folder.resolve():
                 raise VideoPipelineError("Input media is not isolated within its own job")
             provenance = validate_source(source)

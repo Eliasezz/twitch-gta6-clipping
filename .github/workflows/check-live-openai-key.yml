@@ -1,0 +1,45 @@
+name: Check production OpenAI + autopilot readiness
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/check-live-openai-key.yml"
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect production booleans without accessing secrets
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+          url = "https://twitch-gta6-clipping.onrender.com"
+          for i in range(7):
+            try:
+              with urllib.request.urlopen(url+"/video/ready", timeout=25) as r:
+                v=json.load(r)
+              with urllib.request.urlopen(url+"/automation/status", timeout=25) as r:
+                a=json.load(r)
+              with urllib.request.urlopen(url+"/health", timeout=25) as r:
+                h=json.load(r)
+              print(json.dumps({
+                "server_ok": h.get("ok"),
+                "ffmpeg_available": v.get("available"),
+                "openai_api_key_detected": v.get("auto_speech_transcription"),
+                "transcription_provider": v.get("transcription_provider"),
+                "creator_ids_count": h.get("authorized_broadcasters_configured"),
+                "autopilot_ready": a.get("ready_for_automatic_publishing"),
+                "checks": a.get("checks"),
+              }),flush=True)
+              assert h.get("ok") is True
+              assert v.get("available") is True
+              break
+            except Exception as exc:
+              print("Status query retry",type(exc).__name__, flush=True)
+              time.sleep(8)
+          else:
+            raise SystemExit("Cannot inspect production")
+          PY

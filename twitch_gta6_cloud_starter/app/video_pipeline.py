@@ -338,7 +338,17 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         except IntegrityError as exc:
             destination.unlink(missing_ok=True)
             raise VideoPipelineError("Export verification failed: " + str(exc)) from exc
+        # Provide genuine, editable subtitles for desktop/web CapCut handoff.
+        # Never treat hook/title text as transcribed dialogue.
+        from .capcut_pack import ass_to_srt
+        srt_file = destination.with_suffix(".srt")
+        if has_captions and subtitle_mode in ("english_word_synced", "approximate_supplied_text"):
+            editable_srt = ass_to_srt(ass_file, srt_file)
+        else:
+            srt_file.unlink(missing_ok=True)
+            editable_srt = False
         return {
+            "editable_srt": editable_srt,
             "file": destination.name, "size_bytes": destination.stat().st_size,
             "output_validation": verified,
             "duration_seconds": round(output_info["duration"], 2),

@@ -31,7 +31,9 @@ class ExportTests(unittest.TestCase):
             self.assertTrue(bundle.is_file())
             with ZipFile(bundle) as z:
                 names = z.namelist()
-                self.assertEqual(len(names), 6)
+                self.assertEqual(len(names), 8)
+                self.assertTrue(any(n.endswith("/CapCut/plan_montage.json") for n in names))
+                self.assertTrue(any(n.endswith("/CapCut/LISEZ_MOI.txt") for n in names))
                 self.assertTrue(any(n.endswith("/montage_9x16.mp4") for n in names))
                 self.assertTrue(any(n.endswith("/tiktok_description.txt") for n in names))
                 self.assertTrue(any(n.endswith("/youtube_description.txt") for n in names))

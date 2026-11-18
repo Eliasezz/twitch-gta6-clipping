@@ -4,7 +4,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
+from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED, BadZipFile
+
+from .capcut_pack import CAPCUT_README, editor_manifest
 
 from .publishing import publication_package
 
@@ -47,7 +49,15 @@ def export_bundle(job_id, job_dir, status):
             "youtube_description": "Synthetic software test, not real GTA VI footage.",
             "ready": False, "status": "demo_not_publishable",
         })
-    if not archive.is_file() or archive.stat().st_mtime < mp4.stat().st_mtime:
+    refresh = not archive.is_file() or archive.stat().st_mtime < mp4.stat().st_mtime
+    if not refresh:
+        try:
+            with ZipFile(archive) as existing:
+                refresh = not any(name.endswith("/CapCut/plan_montage.json")
+                                  for name in existing.namelist())
+        except (BadZipFile, OSError):
+            refresh = True
+    if refresh:
         if not cover.is_file() and shutil.which("ffmpeg"):
             result = subprocess.run([
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
@@ -88,6 +98,21 @@ def export_bundle(job_id, job_dir, status):
                 z.write(mp4, dirname + "montage_9x16.mp4", compress_type=ZIP_STORED)
                 for index, clip in enumerate((status.get("result") or {}).get("clips", [])[1:], 2):
                     z.write(folder / f"vertical-{index}.mp4", dirname + f"montage_{index}_9x16.mp4", compress_type=ZIP_STORED)
+                # CapCut handoff; never claim this is a native CapCut project.
+                z.writestr(dirname + "CapCut/plan_montage.json",
+                           json.dumps(editor_manifest(job_id, status),
+                                      indent=2, ensure_ascii=False),
+                           compress_type=ZIP_DEFLATED)
+                z.writestr(dirname + "CapCut/LISEZ_MOI.txt",
+                           CAPCUT_README, compress_type=ZIP_DEFLATED)
+                for index, detail in enumerate(clips, 1):
+                    name = "vertical.srt" if index == 1 else f"vertical-{index}.srt"
+                    sidecar = folder / name
+                    if (detail.get("editable_srt") and sidecar.is_file()
+                            and not sidecar.is_symlink()
+                            and sidecar.resolve().parent == folder.resolve()):
+                        z.write(sidecar, dirname + f"CapCut/clip_{index:02}.srt",
+                                compress_type=ZIP_DEFLATED)
                 if cover.is_file():
                     z.write(cover, dirname + "couverture.jpg", compress_type=ZIP_STORED)
                 z.writestr(dirname + "tiktok_description.txt",

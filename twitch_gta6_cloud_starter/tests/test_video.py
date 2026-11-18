@@ -50,6 +50,33 @@ class VideoWorkflowTests(unittest.TestCase):
                 with self.assertRaises(pipeline.VideoPipelineError):
                     pipeline.render_mp4(source, Path(directory) / "out.mp4", clip_seconds=65)
 
+    def test_demo_submission_needs_no_upload(self):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("FFmpeg unavailable")
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            routes, "VIDEO_DIR", Path(directory)
+        ), patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "test-secret"}):
+            tasks = BackgroundTasks()
+            created = routes.create_demo_job(
+                background_tasks=tasks, clip_seconds=65,
+                x_admin_token="test-secret",
+            )
+            self.assertEqual(created["state"], "queued")
+            self.assertEqual(created["requested_duration_seconds"], 65)
+            self.assertTrue(created["demo"])
+            self.assertEqual(len(tasks.tasks), 1)
+            job = routes._read_status(created["job_id"])
+            self.assertEqual(job["source_type"], "original_synthetic")
+
+    def test_demo_rejects_missing_token(self):
+        with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "test-secret"}):
+            with self.assertRaises(HTTPException) as error:
+                routes.create_demo_job(
+                    background_tasks=BackgroundTasks(),
+                    clip_seconds=65, x_admin_token="wrong"
+                )
+            self.assertEqual(error.exception.status_code, 401)
+
     def test_admin_required(self):
         with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": ""}):
             with self.assertRaises(HTTPException) as error:

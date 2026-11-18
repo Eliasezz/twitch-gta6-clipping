@@ -149,12 +149,15 @@ def schedule_both_networks(normalized_media_url, caption, title):
         result = response.json()
     except ValueError:
         result = {}
+    detail = result.get("data") if isinstance(result, dict) else None
+    response_id = (result.get("id") if isinstance(result, dict) else None)
+    if response_id is None and isinstance(detail, dict):
+        response_id = detail.get("id")
     return {
         "state": "scheduled_request_accepted",
         "provider": "metricool",
         "planned_time": payload["publicationDate"],
-        "response_id": (result.get("id") or (result.get("data") or {}).get("id"))
-                        if isinstance(result, dict) else None,
+        "response_id": response_id,
         "networks": ["tiktok", "youtube"],
         "verification_required": "Confirm post in Metricool planner",
     }

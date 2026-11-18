@@ -174,13 +174,16 @@ def recover_failed_video_jobs_on_startup():
             if not (
                 status.get("state") == "failed"
                 and status.get("authorized") is True
-                and status.get("error") == "CaptionError"
-                and not status.get("auto_recovery_attempted_at")
+                and status.get("error") in {"CaptionError", "ZeroDivisionError"}
+                # Allow the second user-requested recovery only after the
+                # hook-only overlay regression has been fixed in this build.
+                and status.get("auto_recovery_revision") != "hook-only-v2"
                 and source.is_file()
             ):
                 continue
             status["state"] = "queued"
             status["auto_recovery_attempted_at"] = datetime.now(timezone.utc).isoformat()
+            status["auto_recovery_revision"] = "hook-only-v2"
             status["previous_error"] = status.pop("error", None)
             status["publication_status"] = "not_ready"
             _write_status(folder, status)

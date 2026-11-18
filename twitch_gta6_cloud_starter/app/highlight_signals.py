@@ -128,7 +128,20 @@ def select_window(path, duration, clip_duration, has_audio, chat_seconds=(), vis
                     pitches[bucket] = pitch
 
     chat_step = 5
-    chat = Counter(int(t // chat_step) for t in chat_seconds if isfinite(t) and 0 <= t < duration)
+    # Chat is optional, never a reason to lose a valid video.
+    # Malformed, non-finite or out-of-range timestamps are discarded.
+    valid_chat = []
+    if isinstance(chat_seconds, (tuple, list)):
+        for item in chat_seconds[:25000]:
+            try:
+                if isinstance(item, bool):
+                    continue
+                value = float(item)
+            except (ValueError, TypeError, OverflowError):
+                continue
+            if isfinite(value) and 0 <= value < duration:
+                valid_chat.append(value)
+    chat = Counter(int(t // chat_step) for t in valid_chat)
     chat_baseline = sum(chat.values()) / max(1, ceil(duration / chat_step))
     audio_baseline = max(100, median(audio.values())) if audio else 100
     visual_baseline = max(3, median(visuals.values())) if visuals else 3

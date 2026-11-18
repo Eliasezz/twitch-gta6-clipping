@@ -92,7 +92,8 @@ def _worker(job_id, caption_text, clip_seconds):
                                 clip_seconds=clip_seconds)
             status.update({"state": "done", "result": result,
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
-        except (VideoPipelineError, OSError, ValueError) as error:
+        except Exception as error:
+            # Mark all worker failures, including subprocess timeouts, as failed.
             status.update({"state": "failed", "error": type(error).__name__})
             print("Video job failed:", job_id, type(error).__name__, str(error)[-500:])
         finally:

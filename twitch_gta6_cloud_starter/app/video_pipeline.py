@@ -206,33 +206,54 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     ass_file = destination.with_suffix(".ass")
     subtitle_mode, detected_language = "none", None
     reaction_score = None
+    transcript_warning = None
     if auto_subtitles:
-        # One transcription of the first 180 seconds supplies both ranking
-        # and clip-relative captions. This may incur API charges when enabled.
-        from .captions import transcribe_english
+        # Subtitle API failures must not destroy a licensed edit. Render the
+        # real source audio, original music and intro; never invent dialogue.
+        from .captions import CaptionError, transcribe_english
         from .highlight import choose_speech_window, window_words
-        analysis_duration = min(info["duration"], max(180.0, duration))
-        transcript_words, subtitle_mode, detected_language = transcribe_english(
-            source, start=0.0, duration=analysis_duration,
-            scratch_dir=destination.parent,
-        )
-        new_start, speech_rank = choose_speech_window(
-            transcript_words, analysis_duration, duration,
-        )
-        if new_start is not None:
-            start = new_start
-            selection = speech_rank["method"]
-            reaction_score = speech_rank.get("reaction_score")
-        aligned_words = window_words(transcript_words, start, duration)
-        has_captions = make_ass(
-            "", duration, ass_file, width, height, timed_words=aligned_words, hook_text=hook_text,
-        )
-        if not has_captions:
-            raise VideoPipelineError("No aligned captions in selected highlight")
+        try:
+            analysis_duration = min(info["duration"], max(180.0, duration))
+            transcript_words, subtitle_mode, detected_language = transcribe_english(
+                source, start=0.0, duration=analysis_duration,
+                scratch_dir=destination.parent,
+            )
+            new_start, speech_rank = choose_speech_window(
+                transcript_words, analysis_duration, duration,
+            )
+            if new_start is not None:
+                start = new_start
+                selection = speech_rank["method"]
+                reaction_score = speech_rank.get("reaction_score")
+            aligned_words = window_words(transcript_words, start, duration)
+            has_captions = make_ass(
+                "", duration, ass_file, width, height,
+                timed_words=aligned_words, hook_text=hook_text,
+            )
+            if not has_captions:
+                raise CaptionError("No real word timestamps in the chosen highlight")
+        except CaptionError as exc:
+            # A 429 can mean insufficient API credits, not an expired key.
+            # Honest fallback: no fabricated transcript or translation.
+            detail = str(exc).lower()
+            if "quota" in detail or "rate limit" in detail:
+                transcript_warning = "openai_quota_or_rate_limit"
+            elif "authentication" in detail or "unauthorized" in detail:
+                transcript_warning = "openai_authentication"
+            else:
+                transcript_warning = "speech_transcription_unavailable"
+            subtitle_mode = "not_available"
+            detected_language = None
+            selection = "audio_activity_fallback"
+            start, _ = pick_highlight_start(source, info["duration"], duration)
+            reaction_score = None
+            has_captions = make_ass(
+                "", duration, ass_file, width, height, hook_text=hook_text,
+            )
     else:
         has_captions = make_ass(caption_text, duration, ass_file, width, height,
                                 hook_text=hook_text)
-        subtitle_mode = "approximate_supplied_text" if has_captions else "none"
+        subtitle_mode = "approximate_supplied_text" if caption_text and has_captions else "none"
     filters = [
         "fps=24",
         f"scale={width}:{height}:force_original_aspect_ratio=increase",
@@ -293,6 +314,8 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "caption_mode": subtitle_mode,
             "detected_language": detected_language,
             "reaction_keyword_score": reaction_score,
+            "transcription_warning": transcript_warning,
+            "speech_words_synchronized": subtitle_mode == "english_word_synced",
             "original_music_mixed": bool(music_enabled),
             "hook_text": hook_text[:80],
             "dynamic_zoom": dynamic_zoom,

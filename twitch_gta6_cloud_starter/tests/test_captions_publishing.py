@@ -95,7 +95,7 @@ class CaptionTests(unittest.TestCase):
                 video_routes.create_video_job(
                     background_tasks=BackgroundTasks(),
                     video=file, authorized=True, caption_text="",
-                    auto_subtitles=True, clip_seconds=65,
+                    auto_subtitles=True, clip_seconds=30, hook_text="Watch",
                     x_admin_token="admin",
                 )
             self.assertEqual(e.exception.status_code, 503)

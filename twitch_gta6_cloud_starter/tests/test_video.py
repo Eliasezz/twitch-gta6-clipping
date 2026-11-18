@@ -141,7 +141,7 @@ class VideoWorkflowTests(unittest.TestCase):
                     background_tasks=BackgroundTasks(),
                     video=file, authorized=True, caption_text="",
                     auto_subtitles=None, music_enabled=True,
-                    hook_text="GTA VI | TEST", clip_seconds=65,
+                    hook_text="GTA VI | TEST", clip_seconds=30,
                     x_admin_token="test-secret"
                 )
                 state = routes._read_status(result["job_id"])

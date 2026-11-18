@@ -95,6 +95,13 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
             output = folder / "vertical.mp4"
             chat_file = folder / "chat-seconds.json"
             chat_seconds = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else ()
+            shorts = status.get("shorts", False)
+            if shorts:
+                width, height = 1080, 1920
+                if not source.is_file():
+                    raise VideoPipelineError("Le fichier source de ce job est introuvable.")
+                if status.get("has_chat_file") and not chat_file.is_file():
+                    raise VideoPipelineError("Le fichier de chat de ce job est introuvable.")
             clips = []
             count = status.get("clip_count", 1)
             for index in range(count):
@@ -107,9 +114,9 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
                                     subtitles_required=status.get("subtitles_required", False),
                                     chat_seconds=chat_seconds,
                                     section=(index, count),
-                                    rhythmic=status.get("rhythmic", False),
+                                    rhythmic=shorts or status.get("rhythmic", False),
                                     face_bottom_left=status.get("face_bottom_left", False),
-                                    voiceover=status.get("voiceover", False),
+                                    voiceover=not shorts and status.get("voiceover", False),
                                     vision_enabled=status.get("vision_enabled", False))
                 clips.append(clip)
             result = dict(clips[0])
@@ -122,8 +129,14 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
         except Exception as error:
             # Mark all worker failures, including subprocess timeouts, as failed.
             status.update({"state": "failed", "error": type(error).__name__})
-            if isinstance(error, CaptionError):
+            for partial in folder.glob("vertical*.mp4"):
+                partial.unlink(missing_ok=True)
+            if isinstance(error, (CaptionError, VideoPipelineError)):
                 status["error_detail"] = str(error)
+            elif isinstance(error, subprocess.SubprocessError):
+                status["error_detail"] = "FFmpeg a interrompu le montage de cette source."
+            else:
+                status["error_detail"] = "Impossible de terminer ce job. Vérifie le fichier et l’espace disponible."
             print("Video job failed:", job_id, type(error).__name__, str(error)[-500:])
         finally:
             # Preserve the uploaded source when a render fails, so the user can
@@ -347,13 +360,13 @@ def create_video_job(background_tasks: BackgroundTasks,
                      auto_subtitles: bool | None = Form(None),
                      music_enabled: bool = Form(True),
                      hook_text: str = Form("GTA VI | BIG REACTION"),
-                     clip_seconds: int = Form(65),
+                     clip_seconds: int = Form(30),
                      x_admin_token: str | None = Header(default=None)):
     _authorize(x_admin_token)
     if not authorized:
         raise HTTPException(403, "Confirm you own this media or have explicit reuse permission")
-    if clip_seconds < 3 or clip_seconds > 90:
-        raise HTTPException(422, "clip_seconds must be 3 to 90")
+    if not 20 <= clip_seconds <= 45:
+        raise HTTPException(422, "Choisis une durée de 20 à 45 secondes.")
     # If omitted from Swagger, auto-select transcription whenever a platform
     # key is configured. Explicit false still avoids any paid transcription.
     subtitles_required = auto_subtitles is True
@@ -364,6 +377,8 @@ def create_video_job(background_tasks: BackgroundTasks,
         raise HTTPException(
             503, "Configure OPENAI_API_KEY or OpenAI OIDC workload identity in Render"
         )
+    if len(hook_text.split()) > 7:
+        raise HTTPException(422, "Accroche limitée à sept mots.")
     if len(hook_text) > 80:
         raise HTTPException(422, "hook_text must contain 80 characters or fewer")
     if len(caption_text) > 5000:
@@ -396,10 +411,10 @@ def create_video_job(background_tasks: BackgroundTasks,
             source_info = probe(source)
         except VideoPipelineError as exc:
             raise HTTPException(422, "Input is not a valid video") from exc
-        if clip_seconds >= 61 and source_info["duration"] < clip_seconds - 0.1:
+        if source_info["duration"] < 20:
             raise HTTPException(
                 422,
-                f"Video must be at least {clip_seconds} seconds long for the requested clip",
+                "La source doit durer au moins 20 secondes.",
             )
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
@@ -408,6 +423,7 @@ def create_video_job(background_tasks: BackgroundTasks,
         video.file.close()
 
     status = {"job_id": job_id, "state": "queued", "created_at": datetime.now(timezone.utc).isoformat(),
+              "shorts": True, "face_bottom_left": True,
               "input_bytes": amount, "authorized": True,
               "original_filename": (video.filename or "source.mp4")[:128],
               "requested_duration_seconds": clip_seconds,

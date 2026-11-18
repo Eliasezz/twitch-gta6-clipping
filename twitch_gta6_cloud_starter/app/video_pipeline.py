@@ -42,6 +42,7 @@ def _execute(command, timeout=240):
 def probe(path):
     result = _execute([
         _check_binary("ffprobe"), "-v", "error",
+        "-format_whitelist", "mov,matroska,webm", "-protocol_whitelist", "file",
         "-show_entries", "format=duration,size:stream=codec_type,width,height",
         "-of", "json", str(path)
     ], timeout=30)
@@ -85,8 +86,8 @@ ScaledBorderAndShadow: yes
 WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hype,DejaVu Sans,54,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,2,35,35,220,1
-Style: Hook,DejaVu Sans,44,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,8,45,45,140,1
+Style: Hype,DejaVu Sans,{round(width*.072)},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,2,{round(width*.10)},{round(width*.17)},{round(height*.24)},1
+Style: Hook,DejaVu Sans,{round(width*.06)},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,8,45,45,140,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
@@ -95,7 +96,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         hook = _ass_escape(str(hook_text).upper())[:80]
         if hook:
             extras.append(
-                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 3.2))},Hook,,0,0,0,,{hook}"
+                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 1.5))},Hook,,0,0,0,,{hook}"
             )
     if timed_words:
         # Each event starts/ends at the ASR word boundaries. Show 3-word
@@ -111,18 +112,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if token and finish > begin + 0.04:
                 validated.append((begin, finish, token))
         lines = []
-        for i, (begin, finish, _) in enumerate(validated):
-            group_start = (i // 3) * 3
-            group = validated[group_start:group_start + 3]
-            text_parts = []
-            for j, (_, _, token) in enumerate(group):
-                if j + group_start == i:
-                    text_parts.append(r"{\c&H0000EFFF&}" + token + r"{\c&H00FFFFFF&}")
-                else:
-                    text_parts.append(token)
-            lines.append(
-                f"Dialogue: 0,{_ass_time(begin)},{_ass_time(finish)},Hype,,0,0,0,,{' '.join(text_parts)}"
-            )
+        for begin, finish, token in validated:
+            lines.append(f"Dialogue: 0,{_ass_time(begin)},{_ass_time(finish)},Hype,,0,0,0,,"
+                         + r"{\c&H0000EFFF&}" + token)
         destination.write_text(header + "\n".join(extras + lines) + "\n", encoding="utf-8")
         return bool(extras or lines)
     chunks = [words[i:i + 3] for i in range(0, len(words), 3)]
@@ -164,7 +156,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         raise VideoPipelineError("Source video not found")
     if clip_seconds < 3 or clip_seconds > 90:
         raise VideoPipelineError("clip_seconds must be between 3 and 90")
-    if (width, height) not in {(360, 640), (540, 960), (720, 1280)}:
+    if (width, height) not in {(360, 640), (540, 960), (720, 1280), (1080, 1920)}:
         raise VideoPipelineError("Unsupported output format")
     info = probe(source)
     if info["duration"] > MAX_SOURCE_SECONDS:
@@ -180,16 +172,23 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     else:
         start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
     if rhythmic and duration >= 5:
-        from .rhythm import assemble
+        if not info["has_audio"] and not music_enabled:
+            raise VideoPipelineError("Source sans audio. Active la musique pour exporter avec une piste sonore.")
+        from .rhythm import active_ranges, assemble, plan
+        section_end = info["duration"] * (section[0]+1) / section[1]
+        section_begin = info["duration"] * section[0] / section[1]
+        window_start = max(section_begin, min(start, section_end-duration*2))
+        ranges = active_ranges(source, window_start, min(section_end-window_start, duration*2), info["has_audio"])
+        shots = plan(ranges, analysis["event_seconds"], duration)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=destination.parent) as folder:
-            sequence = assemble(source, folder, start, duration, analysis["event_seconds"],
-                                face_bottom_left, width, height)
-            output = render_mp4(sequence, destination, caption_text=caption_text, clip_seconds=clip_seconds,
+            sequence = assemble(source, folder, shots, face_bottom_left, width, height)
+            output = render_mp4(sequence, destination, caption_text=caption_text, clip_seconds=duration,
                                 width=width, height=height, dynamic_zoom=False, auto_subtitles=auto_subtitles,
                                 music_enabled=music_enabled, hook_text=hook_text, subtitles_required=subtitles_required,
-                                voiceover=voiceover, prepared=True)
-        output.update(start_seconds=start, highlight_analysis=analysis, selection_mode="rhythmic_four_shots")
+                                voiceover=False, prepared=True)
+        output.update(start_seconds=start, highlight_analysis=analysis, selection_mode="rhythmic_shorts",
+                      source_shots=[{"start": round(a,3), "duration": round(b,3)} for a,b in shots])
         return output
     selection = "sampled_audio_visual_chat" if start or duration < info["duration"] else "entire_video"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -198,7 +197,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     caption_warning = None
     transcription_warning = None
     has_captions = False
-    if auto_subtitles:
+    if auto_subtitles and (not prepared or info["has_audio"]):
         from .captions import CaptionError, transcribe_english
         try:
             if not info["has_audio"]:
@@ -262,7 +261,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     voice_ready = False
     if voiceover and hook_text.strip():
         try:
-            with tempfile.TemporaryDirectory() as directory:
+            with tempfile.TemporaryDirectory(dir=destination.parent) as directory:
                 Path(directory, "intro.txt").write_text(hook_text[:80], encoding="utf-8")
                 subprocess.run([
                     _check_binary("ffmpeg"), "-v", "error", "-y", "-f", "lavfi",
@@ -282,10 +281,29 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         tracks.append("[1:a:0]volume=0.19[bed]")
     if voice_ready:
         tracks.append(f"[{2 if music_enabled else 1}:a:0]volume=1.4[narr]")
+    if prepared and not tracks:
+        raise VideoPipelineError("Source sans audio. Active la musique pour exporter avec une piste sonore.")
     if tracks:
-        labels = "".join(track[track.rindex("["):] for track in tracks)
-        mix = f"{labels}amix=inputs={len(tracks)}:duration=longest:normalize=0,alimiter=limit=0.95[aout]"
-        command.extend(["-filter_complex", ";".join(tracks + [mix]), "-map", "[aout]"])
+        if prepared and info["has_audio"] and music_enabled:
+            tracks = ["[0:a:0]asplit=2[src][key]", "[1:a:0]volume=0.14[music]",
+                      "[music][key]sidechaincompress=threshold=0.035:ratio=7:attack=15:release=275[bed]"]
+            labels = "[src][bed]"
+            inputs = 2
+        else:
+            inputs = len(tracks)
+            labels = "".join(track[track.rindex("["):] for track in tracks)
+        mix = f"{labels}amix=inputs={inputs}:duration=longest:normalize=0,atrim=duration={duration},alimiter=limit=0.95"
+        if prepared:
+            target = "loudnorm=I=-14:TP=-1.5:LRA=9"
+            measure = _execute(command + ["-filter_complex", ";".join(tracks + [mix+","+target+":print_format=json[m]"]),
+                                "-map","[m]","-vn","-f","null","-"], timeout=150)
+            stats = json.loads(measure.stderr[measure.stderr.rfind("{"):measure.stderr.rfind("}")+1])
+            if not math.isfinite(float(stats["input_i"])):
+                raise VideoPipelineError("Le mix audio est silencieux. Active la musique ou choisis une autre source.")
+            for key, field in (("I","i"),("TP","tp"),("LRA","lra"),("thresh","thresh")):
+                target += f":measured_{key}=" + stats["input_"+field]
+            mix += ","+target+":offset="+stats["target_offset"]+":linear=true,aresample=48000"
+        command.extend(["-filter_complex_threads","1","-filter_complex", ";".join(tracks + [mix+"[aout]"]), "-map", "[aout]"])
     command.extend([
         "-vf", ",".join(filters),
         "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast", "-crf", "25",
@@ -299,6 +317,9 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             raise VideoPipelineError("Output geometry failed validation")
         if not 0.5 < output_info["duration"] <= duration + 1.5:
             raise VideoPipelineError("Output duration failed validation")
+        if prepared and (not output_info["has_audio"] or abs(output_info["duration"]-duration) > .25
+                         or output_info["duration"] < 19.94 or output_info["duration"] > 45.10):
+            raise VideoPipelineError("Export invalide : durée ou piste audio incorrecte.")
         if destination.stat().st_size < 1024:
             raise VideoPipelineError("Output MP4 was unexpectedly small")
         return {

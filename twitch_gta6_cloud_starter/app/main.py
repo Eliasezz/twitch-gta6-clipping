@@ -807,8 +807,7 @@ def startup_event():
     thread.start()
 
     # Opt-in, one-time original/synthetic MP4 smoke test on the existing server.
-    from .video_routes import start_internal_selftest
-    start_internal_selftest()
+
 
     print("Twitch GTA VI Radar démarré.")
     print("Fenêtre :", LOOKBACK_HOURS, "heures")

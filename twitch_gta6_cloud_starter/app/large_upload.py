@@ -30,14 +30,12 @@ class StartUpload(BaseModel):
     filename: str = Field(min_length=1, max_length=160)
     size_bytes: int = Field(gt=0)
     authorized: bool
-    clip_seconds: int = Field(default=65, ge=3, le=90)
+    clip_seconds: int = Field(default=30, ge=20, le=45)
     auto_subtitles: bool | None = None
     music_enabled: bool = True
     vision_enabled: bool = False
-    rhythmic: bool = False
-    voiceover: bool = False
     clip_count: int = Field(default=1, ge=1, le=3)
-    face_bottom_left: bool = False
+    face_bottom_left: bool = True
     hook_text: str = Field(default="GTA VI | BIG REACTION", max_length=80)
     caption_text: str = Field(default="", max_length=5000)
     chat_seconds: list[Annotated[float, Field(ge=0, le=MAX_SOURCE_SECONDS, allow_inf_nan=False)]] = Field(default_factory=list, max_length=25000)
@@ -105,6 +103,8 @@ def uploader_page():
 def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=None)):
     routes = _routes()
     routes._authorize(x_admin_token)
+    if len(data.hook_text.split()) > 7:
+        raise HTTPException(422, "Accroche limitée à sept mots.")
     if not data.authorized:
         raise HTTPException(403, "Confirm ownership or reuse permission for this video")
     if not data.filename.lower().endswith((".mp4", ".mov", ".mkv")):
@@ -138,14 +138,13 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
             "next_index": 0,
             "authorized": True,
             "filename": Path(data.filename).name[:160],
+            "shorts": True,
             "clip_seconds": data.clip_seconds,
             "auto_subtitles": bool(auto_subtitles),
             "music_enabled": bool(data.music_enabled),
             "vision_enabled": data.vision_enabled,
             "clip_count": data.clip_count,
             "face_bottom_left": data.face_bottom_left,
-            "rhythmic": data.rhythmic,
-            "voiceover": data.voiceover,
             "hook_text": data.hook_text,
             "caption_text": data.caption_text,
             "chat_seconds": data.chat_seconds,
@@ -246,16 +245,18 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             raise HTTPException(422, "The completed upload is not a valid playable video") from exc
         if info["duration"] > MAX_SOURCE_SECONDS:
             raise HTTPException(422, "Source video exceeds the 12-hour input limit")
-        if info["duration"] < meta["clip_seconds"] - 0.1 and meta["clip_seconds"] >= 61:
-            raise HTTPException(422, "Video must be at least as long as the requested clip")
+        count = meta.get("clip_count", 1)
+        if info["duration"] < 20 * count:
+            raise HTTPException(422, f"La source doit durer au moins {20 * count} secondes pour {count} clip(s).")
+        meta["clip_seconds"] = min(meta["clip_seconds"], int(info["duration"] / count))
         if meta.get("chat_seconds"):
             (folder / "chat-seconds.json").write_text(json.dumps(meta["chat_seconds"]), encoding="utf-8")
-        if meta.get("clip_count", 1) > 1 and info["duration"] < meta["clip_count"] * meta["clip_seconds"]:
-            raise HTTPException(422, "Réduis la durée ou le nombre de clips pour obtenir des extraits distincts.")
         temp_file.rename(folder / "source.mp4")
         status = routes._read_status(job_id)
         status.update({
             "state": "queued",
+            "shorts": meta.get("shorts", False),
+            "has_chat_file": bool(meta.get("chat_seconds")),
             "upload_progress": 100.0,
             "input_bytes": meta["expected_bytes"],
             "requested_duration_seconds": meta["clip_seconds"],
@@ -383,14 +384,14 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 </div>
 <p class="muted">Le token est uniquement celui que tu colles ici. Le serveur ne révèle jamais POLL_ADMIN_TOKEN. Évite de partager ton presse-papiers.</p>
 </section><section class="card"><h2>Montage</h2>
-<label><input id="rhythmic" type="checkbox" checked> Montage rythmé en quatre plans</label>
+
 <details><summary>Ajouter les données du chat</summary><label for="chat">Chat horodaté (JSON facultatif)</label><input id="chat" type="file" accept=".json,application/json">
 <p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
 </details><label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
 <label><input id="faceLeft" type="checkbox" checked> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
-<label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="22">
-<label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
-<label><input id="voiceover" type="checkbox" checked> Lire l’accroche en voix off anglaise</label>
+<label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="20" max="45" value="22">
+<label for="hook">Accroche · 7 mots maximum</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
+
 <label for="subtitles">Sous-titres anglais</label>
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
 <label><input id="vision" type="checkbox"> Faire comparer les images des moments candidats par OpenAI</label>
@@ -634,6 +635,8 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
    const file=el('video').files[0],token=el('token').value.trim();
    if(!token){show('Copie POLL_ADMIN_TOKEN depuis Render.',true);return}
    if(!file){show('Choisis la vidéo à monter.',true);return}
+   if(Number(el('seconds').value)<20||Number(el('seconds').value)>45){show('Choisis entre 20 et 45 secondes.',true);return}
+   if(el('hook').value.trim().split(/\s+/).length>7){show('Accroche limitée à sept mots.',true);return}
    if(!el('rights').checked){show("Coche l'autorisation de réutilisation.",true);return}
    if(file.size>300*1024*1024){show('Fichier supérieur à 300 Mo. Compresse-le avant envoi.',true);return}
    send.disabled=true;result.replaceChildren();progress.hidden=false;progress.value=0;
@@ -642,13 +645,14 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
        clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
-       hook_text:el('hook').value,vision_enabled:el('vision').checked,rhythmic:el('rhythmic').checked,voiceover:el('voiceover').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
+       hook_text:el('hook').value,vision_enabled:el('vision').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
      const chatFile=el('chat').files[0];
      if(chatFile){
        if(chatFile.size>512*1024)throw Error('Le fichier de chat dépasse 512 Ko.');
-       const chat=JSON.parse(await chatFile.text());
+       const raw=(await chatFile.text()).trim();
+       const chat=raw?JSON.parse(raw):[];
        if(!Array.isArray(chat)||chat.length>25000||chat.some(t=>!Number.isFinite(t)||t<0||t>43200)){
          throw Error('Le chat doit être une liste de 25 000 horodatages maximum, exprimés en secondes.');
        }

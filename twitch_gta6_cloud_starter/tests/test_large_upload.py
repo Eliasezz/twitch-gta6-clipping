@@ -30,7 +30,7 @@ class ChunkUploadTests(unittest.TestCase):
             context.stop()
         self.tmp.cleanup()
 
-    def create(self, size=4200, duration=65):
+    def create(self, size=4200, duration=30):
         data=large_upload.StartUpload(
             filename="my-authorized-video.mov",
             size_bytes=size,

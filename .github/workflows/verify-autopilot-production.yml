@@ -1,0 +1,59 @@
+name: Verify live automatic clipping readiness
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/verify-autopilot-production.yml
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect public capability booleans without fetching secrets
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+          host = "https://twitch-gta6-clipping.onrender.com"
+          for attempt in range(12):
+              try:
+                  endpoints = {}
+                  for name, path in (
+                      ("automation", "/automation/status"),
+                      ("video", "/video/ready"),
+                      ("twitch", "/health"),
+                      ("openapi", "/openapi.json"),
+                  ):
+                      with urllib.request.urlopen(host + path, timeout=20) as resp:
+                          endpoints[name] = json.load(resp)
+                  auto = endpoints["automation"]
+                  video = endpoints["video"]
+                  twitch = endpoints["twitch"]
+                  schema = endpoints["openapi"]
+                  routes_ok = all(route in schema.get("paths", {}) for route in (
+                      "/automation/status", "/automation/run",
+                      "/video/jobs", "/video/demo", "/video/media/{job_id}/{token}/vertical.mp4",
+                  ))
+                  print(json.dumps({
+                      "live": twitch.get("ok"),
+                      "ffmpeg": video.get("available"),
+                      "admin_auth": video.get("configured_for_private_jobs"),
+                      "openai_key_present": video.get("auto_speech_transcription"),
+                      "original_music_supported": video.get("original_instrumental_music_supported"),
+                      "authorized_creator_ids": twitch.get("authorized_broadcasters_configured"),
+                      "automation_ready": auto.get("ready_for_automatic_publishing"),
+                      "automation_checks": auto.get("checks"),
+                      "routes_ok": routes_ok,
+                  }), flush=True)
+                  if not twitch.get("ok") or not video.get("available") or not routes_ok:
+                      raise RuntimeError("Production service missing required routes")
+                  print("SUCCESS: Render production automatic workflow exposes expected routes", flush=True)
+                  break
+              except Exception as exc:
+                  print("Readiness audit retry", type(exc).__name__, flush=True)
+                  time.sleep(10)
+          else:
+              raise RuntimeError("Production automatic workflow readiness audit failed")
+          PY

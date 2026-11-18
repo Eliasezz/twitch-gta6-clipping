@@ -140,7 +140,8 @@ class VideoWorkflowTests(unittest.TestCase):
                 result = routes.create_video_job(
                     background_tasks=BackgroundTasks(),
                     video=file, authorized=True, caption_text="",
-                    auto_subtitles=None, clip_seconds=65,
+                    auto_subtitles=None, music_enabled=True,
+                    hook_text="GTA VI | TEST", clip_seconds=65,
                     x_admin_token="test-secret"
                 )
                 state = routes._read_status(result["job_id"])

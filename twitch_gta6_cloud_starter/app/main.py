@@ -793,6 +793,11 @@ def startup_event():
     from .large_upload import recover_completed_uploads
     recover_completed_uploads()
 
+    # The user may explicitly request a retry of a previously failed
+    # CaptionError job without re-uploading its original source file.
+    from .video_routes import recover_failed_video_jobs_on_startup
+    recover_failed_video_jobs_on_startup()
+
     thread = threading.Thread(
         target=poll_loop,
         daemon=True

@@ -109,6 +109,8 @@ def video_ready():
         "workflow": "authorized-file-upload -> audio-activity highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
         "auto_speech_transcription": False,
         "automatic_social_publishing": False,
+        "recommended_tiktok_duration_seconds": 65,
+        "max_clip_duration_seconds": 90,
     }
 
 
@@ -117,13 +119,13 @@ def create_video_job(background_tasks: BackgroundTasks,
                      video: UploadFile = File(...),
                      authorized: bool = Form(False),
                      caption_text: str = Form(""),
-                     clip_seconds: int = Form(25),
+                     clip_seconds: int = Form(65),
                      x_admin_token: str | None = Header(default=None)):
     _authorize(x_admin_token)
     if not authorized:
         raise HTTPException(403, "Confirm you own this media or have explicit reuse permission")
-    if clip_seconds < 3 or clip_seconds > 45:
-        raise HTTPException(422, "clip_seconds must be 3 to 45")
+    if clip_seconds < 3 or clip_seconds > 90:
+        raise HTTPException(422, "clip_seconds must be 3 to 90")
     if len(caption_text) > 5000:
         raise HTTPException(413, "Caption text too long")
     if not (video.filename or "").lower().endswith((".mp4", ".mov", ".mkv")):
@@ -150,6 +152,15 @@ def create_video_job(background_tasks: BackgroundTasks,
                 destination.write(block)
         if amount < 1024:
             raise HTTPException(422, "Video file is empty or too small")
+        try:
+            source_info = probe(source)
+        except VideoPipelineError as exc:
+            raise HTTPException(422, "Input is not a valid video") from exc
+        if clip_seconds >= 61 and source_info["duration"] < clip_seconds - 0.1:
+            raise HTTPException(
+                422,
+                f"Video must be at least {clip_seconds} seconds long for the requested clip",
+            )
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -157,7 +168,8 @@ def create_video_job(background_tasks: BackgroundTasks,
         video.file.close()
 
     status = {"job_id": job_id, "state": "queued", "created_at": datetime.now(timezone.utc).isoformat(),
-              "input_bytes": amount, "authorized": True}
+              "input_bytes": amount, "authorized": True,
+              "requested_duration_seconds": clip_seconds}
     _write_status(folder, status)
     background_tasks.add_task(_worker, job_id, caption_text, clip_seconds)
     return status

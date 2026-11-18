@@ -91,6 +91,17 @@ runs it through the real editor. For demo workloads it renders a small
 a streamer clip, licensed media, or monetizable content. For real clips,
 `POST /video/jobs` still requires an authorized video source upload.
 
+### Optional one-time server self-test
+
+Setting `VIDEO_SELFTEST_ONCE=1` in Render triggers one private, 65-second
+synthetic video render on startup. It creates a persistent `selftest.json`
+manifest so a successful self-test is not repeated after restarts.
+Check `GET /video/ready` and its `production_selftest.state` field; state
+`done` and `duration_seconds` ~65 verify a video was successfully rendered
+inside Render. Its MP4 can be retrieved using the usual authenticated
+`GET /video/jobs/{job_id}/download` endpoint. No third-party clip is fetched.
+
+
 ## Video workflow (FFmpeg, no additional subscription)
 
 The Render native Python runtime includes `ffmpeg` and `ffprobe`. This

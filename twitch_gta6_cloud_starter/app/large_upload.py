@@ -398,7 +398,7 @@ progress{margin-top:18px;width:100%;height:20px}
      await navigator.clipboard.writeText(value);
      return;
    }
-   // Safari compatibility, without saving anything to localStorage/cookies.
+   // Safari clipboard fallback; the page never persists entered secrets.
    const temp=document.createElement('textarea');
    temp.value=value;
    temp.setAttribute('readonly','');

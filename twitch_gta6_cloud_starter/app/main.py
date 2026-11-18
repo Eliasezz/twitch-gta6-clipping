@@ -790,8 +790,9 @@ def startup_event():
 
     # Recover previously uploaded, fully received videos rejected by the
     # former 15-minute limit, without requiring another upload.
-    from .large_upload import recover_completed_uploads
+    from .large_upload import recover_completed_uploads, recover_failed_caption_uploads
     recover_completed_uploads()
+    recover_failed_caption_uploads()
 
     thread = threading.Thread(
         target=poll_loop,

@@ -392,6 +392,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 <p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
 </details><label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
 <label><input id="faceLeft" type="checkbox" checked> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
+<p class="muted">1 à 3 montages distincts, calculés successivement. Le ZIP contiendra aussi un plan de montage et des sous-titres SRT importables dans CapCut Web/Desktop lorsqu’ils existent.</p>
 <label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="20" max="45" value="22">
 <label for="hook">Accroche · 7 mots maximum</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
 

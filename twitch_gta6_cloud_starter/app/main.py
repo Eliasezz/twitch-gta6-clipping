@@ -788,6 +788,11 @@ def startup_event():
     from .autopilot import init_automation_db
     init_automation_db()
 
+    # Recover previously uploaded, fully received videos rejected by the
+    # former 15-minute limit, without requiring another upload.
+    from .large_upload import recover_completed_uploads
+    recover_completed_uploads()
+
     thread = threading.Thread(
         target=poll_loop,
         daemon=True

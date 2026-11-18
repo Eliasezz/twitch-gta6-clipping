@@ -5,7 +5,7 @@ import os
 import shutil
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, UploadFile
@@ -17,6 +17,31 @@ router = APIRouter(prefix="/video", tags=["video-workflow"])
 VIDEO_DIR = Path(os.getenv("VIDEO_STORAGE_DIR", "/data/videos"))
 MAX_UPLOAD_BYTES = min(120, max(1, int(os.getenv("VIDEO_MAX_UPLOAD_MB", "75")))) * 1024 * 1024
 _render_lock = threading.Lock()
+VIDEO_KEEP_HOURS = max(24, int(os.getenv("VIDEO_KEEP_HOURS", "48")))
+
+
+def _cleanup_finished_jobs():
+    """Free storage used by already-finished jobs older than the retention period."""
+    if not VIDEO_DIR.exists():
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=VIDEO_KEEP_HOURS)
+    for entry in VIDEO_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            if str(uuid.UUID(entry.name)) != entry.name:
+                continue
+            status_file = entry / "status.json"
+            if not status_file.is_file():
+                continue
+            item = json.loads(status_file.read_text(encoding="utf-8"))
+            if item.get("state") not in {"done", "failed"}:
+                continue
+            created = datetime.fromisoformat(item["created_at"])
+            if created.tzinfo and created < cutoff:
+                shutil.rmtree(entry)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
 
 
 def _authorize(token):
@@ -103,6 +128,7 @@ def create_video_job(background_tasks: BackgroundTasks,
     if not (video.filename or "").lower().endswith((".mp4", ".mov", ".mkv")):
         raise HTTPException(415, "Upload an MP4, MOV, or MKV video")
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    _cleanup_finished_jobs()
     if shutil.disk_usage(VIDEO_DIR).free < MAX_UPLOAD_BYTES * 2:
         raise HTTPException(507, "Insufficient disk space for this upload")
 

@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 
 
 # ============================================================
@@ -16,6 +16,8 @@ from fastapi import FastAPI, HTTPException, Query
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "").strip()
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "").strip()
+# If omitted, manually-triggered polls are disabled (scheduled polls continue).
+POLL_ADMIN_TOKEN = os.getenv("POLL_ADMIN_TOKEN", "").strip()
 
 LOOKBACK_HOURS = max(1, int(os.getenv("CLIP_LOOKBACK_HOURS", "24")))
 MIN_VIEWS = max(0, int(os.getenv("MIN_CLIP_VIEWS", "100")))
@@ -266,9 +268,10 @@ def get_twitch_token():
     ):
         return token_cache["access_token"]
 
+    # OAuth secrets must be sent in the form BODY, never in URL query strings.
     response = requests.post(
         TWITCH_TOKEN_URL,
-        params={
+        data={
             "client_id": TWITCH_CLIENT_ID,
             "client_secret": TWITCH_CLIENT_SECRET,
             "grant_type": "client_credentials"
@@ -732,9 +735,10 @@ def poll_once():
 
     except Exception as error:
 
-        state["last_error"] = str(error)
+        # Public /health must not expose request URLs or account details.
+        state["last_error"] = type(error).__name__
 
-        print("Erreur pendant la recherche :", error)
+        print("Erreur pendant la recherche :", type(error).__name__, error)
 
         raise
 
@@ -818,18 +822,23 @@ def health():
 
 
 @app.post("/poll")
-def manual_poll():
+def manual_poll(x_admin_token: str | None = Header(default=None)):
+    # Public POST would otherwise allow anyone to consume Twitch rate limits.
+    if not POLL_ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=403,
+            detail="Manual polling disabled. Configure POLL_ADMIN_TOKEN in Render."
+        )
+    if x_admin_token != POLL_ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid admin token.")
 
     try:
         return poll_once()
-
     except Exception as error:
-
-        print("Erreur POST /poll :", error)
-
+        print("Erreur POST /poll :", type(error).__name__, error)
         raise HTTPException(
-            status_code=500,
-            detail=str(error)
+            status_code=502,
+            detail="Twitch polling failed. Check the server logs."
         )
 
 

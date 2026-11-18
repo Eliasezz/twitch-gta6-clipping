@@ -87,6 +87,24 @@ class VideoWorkflowTests(unittest.TestCase):
             self.assertTrue(status["download_endpoint"].endswith("/download"))
             self.assertTrue((Path(directory) / job_id / "vertical.mp4").is_file())
 
+    def test_internal_selftest_runs_once(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            routes, "VIDEO_DIR", Path(directory)
+        ), patch.dict(os.environ, {"VIDEO_SELFTEST_ONCE": "1"}), patch(
+            "app.video_routes.threading.Thread"
+        ) as thread:
+            routes.start_internal_selftest()
+            self.assertTrue((Path(directory) / "selftest.json").is_file())
+            self.assertEqual(thread.call_count, 1)
+            job_id = routes._selftest_summary()["job_id"]
+            state_file = Path(directory) / job_id
+            status = routes._read_status(job_id)
+            status.update({"state": "done", "result": {"duration_seconds": 65}})
+            routes._write_status(state_file, status)
+            routes.start_internal_selftest()
+            self.assertEqual(thread.call_count, 1)
+            self.assertEqual(routes._selftest_summary()["duration_seconds"], 65)
+
     def test_demo_rejects_missing_token(self):
         with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "test-secret"}):
             with self.assertRaises(HTTPException) as error:

@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from typing import Annotated
 
 from .video_pipeline import VideoPipelineError, MAX_SOURCE_SECONDS, probe
 
@@ -32,8 +33,10 @@ class StartUpload(BaseModel):
     clip_seconds: int = Field(default=65, ge=3, le=90)
     auto_subtitles: bool | None = None
     music_enabled: bool = True
+    vision_enabled: bool = False
     hook_text: str = Field(default="GTA VI | BIG REACTION", max_length=80)
     caption_text: str = Field(default="", max_length=5000)
+    chat_seconds: list[Annotated[float, Field(ge=0, le=MAX_SOURCE_SECONDS, allow_inf_nan=False)]] = Field(default_factory=list, max_length=25000)
 
 
 def _routes():
@@ -134,8 +137,11 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
             "clip_seconds": data.clip_seconds,
             "auto_subtitles": bool(auto_subtitles),
             "music_enabled": bool(data.music_enabled),
+            "vision_enabled": data.vision_enabled,
             "hook_text": data.hook_text,
             "caption_text": data.caption_text,
+            "chat_seconds": data.chat_seconds,
+            "subtitles_required": data.auto_subtitles is True,
         }
         _write_meta(job_id, meta)
         routes._write_status(folder, {
@@ -234,6 +240,8 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             raise HTTPException(422, "Source video exceeds the 12-hour input limit")
         if info["duration"] < meta["clip_seconds"] - 0.1 and meta["clip_seconds"] >= 61:
             raise HTTPException(422, "Video must be at least as long as the requested clip")
+        if meta.get("chat_seconds"):
+            (folder / "chat-seconds.json").write_text(json.dumps(meta["chat_seconds"]), encoding="utf-8")
         temp_file.rename(folder / "source.mp4")
         status = routes._read_status(job_id)
         status.update({
@@ -242,6 +250,8 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             "input_bytes": meta["expected_bytes"],
             "requested_duration_seconds": meta["clip_seconds"],
             "auto_subtitles_requested": meta["auto_subtitles"],
+            "subtitles_required": meta.get("subtitles_required", False),
+            "vision_enabled": meta.get("vision_enabled", False),
             "music_original_generated": meta["music_enabled"],
             "hook_text": meta["hook_text"],
             "publication_status": "not_ready",
@@ -345,7 +355,7 @@ progress{margin-top:18px;width:100%;height:20px}
 </head>
 <body><main>
 <h1>GTA VI — Montage automatique</h1>
-<p>Envoie une vidéo autorisée (jusqu'à 300 Mo, même si elle dure plus de 15 minutes) ; le serveur la reçoit en morceaux, sélectionne un extrait, ajoute sous-titres anglais et musique, puis génère un MP4 de 65 secondes et un ZIP prêt à publier.</p><p class="muted">La sélection automatique actuelle analyse surtout les 3 premières minutes, et non toutes les heures d'un long stream.</p>
+<p>Envoie une vidéo autorisée (jusqu'à 300 Mo, même si elle dure plus de 15 minutes) ; le serveur la reçoit en morceaux, sélectionne un extrait, ajoute sous-titres anglais et musique, puis génère un MP4 de 65 secondes et un ZIP prêt à publier.</p><p class="muted">La sélection combine les variations sonores, les changements d’image et les pics du chat fourni. Les longues vidéos sont échantillonnées sur toute leur durée.</p>
 <label for="token">X-Admin-Token (depuis Render → Environment → POLL_ADMIN_TOKEN)</label>
 <div class="controls">
 <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Jeton privé, jamais sauvegardé">
@@ -354,10 +364,13 @@ progress{margin-top:18px;width:100%;height:20px}
 </div>
 <p class="muted">Le token est uniquement celui que tu colles ici. Le serveur ne révèle jamais POLL_ADMIN_TOKEN. Évite de partager ton presse-papiers.</p>
 <label for="video">Vidéo source (MP4, MOV ou MKV)</label><input id="video" type="file" accept=".mp4,.mov,.mkv,video/*">
+<label for="chat">Chat horodaté (JSON facultatif)</label><input id="chat" type="file" accept=".json,application/json">
+<p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
 <label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="65">
 <label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
 <label for="subtitles">Sous-titres anglais</label>
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
+<label><input id="vision" type="checkbox"> Faire comparer les images des moments candidats par OpenAI</label>
 <label><input id="music" type="checkbox" checked> Ajouter une musique originale discrète</label>
 <label><input id="rights" type="checkbox"> Je possède les droits ou l'autorisation de réutiliser cette vidéo</label>
 <button id="send">Tout exécuter : importer → monter → télécharger</button>
@@ -459,30 +472,47 @@ progress{margin-top:18px;width:100%;height:20px}
        (state.result?('Durée : '+state.result.duration_seconds+' secondes\nSous-titres : '+state.result.caption_mode):'')+
        (state.transcription_warning?'\nAttention : transcription indisponible ('+state.transcription_warning+'); MP4 quand même produit.':''));
      if(state.state==='done'){
-       const link=await api('/video/jobs/'+job+'/export-link',{method:'POST'});
-       const a=document.createElement('a');
-       a.href=link.url; a.target='_blank';a.rel='noopener noreferrer';
-       a.textContent='Télécharger le ZIP prêt à publier';
-       a.className='download';
-       const mp4=document.createElement('button');
-       mp4.className='secondary';
-       mp4.textContent='Obtenir un lien MP4 seul';
-       mp4.addEventListener('click',async()=>{
-         mp4.disabled=true;
+       const analysis=state.result.highlight_analysis;
+       const summary=['Durée : '+state.result.duration_seconds+' s', 'Sous-titres : '+state.result.caption_mode];
+       if(Number.isFinite(state.result.start_seconds))summary.push('Début du clip : '+state.result.start_seconds+' s');
+       if(analysis){
+         summary.push('Moment retenu : '+analysis.event_seconds+' s');
+         summary.push('Durée échantillonnée : '+analysis.sampled_source_seconds+' / '+analysis.source_duration_seconds+' s');
+         summary.push(analysis.chat_peaks.length
+           ? 'Pics du chat : '+analysis.chat_peaks.map(p=>p.at_seconds+' s ('+p.messages+' messages en 5 s)').join(', ')
+           : (analysis.chat_messages?'Aucun pic du chat détecté.':'Aucun chat fourni.'));
+       }
+       if(analysis?.vision)summary.push('Analyse des images : '+analysis.vision.reason);
+       if(analysis?.vision_warning)summary.push(analysis.vision_warning);
+       if(state.result.caption_warning)summary.push('Sous-titres indisponibles — '+state.result.caption_warning);
+       show('Job : '+job+'\nMontage terminé.\n'+summary.join('\n'));
+       const download=document.createElement('button');
+       download.textContent='Télécharger le MP4';
+       download.title='Obtenir un lien MP4 seul';
+       download.onclick=async()=>{
+         download.disabled=true;
          try{
-           const file=await fetch('/video/jobs/'+job+'/download',{
-             headers:{'X-Admin-Token':el('token').value.trim()},cache:'no-store'
-           });
-           if(!file.ok)throw Error('HTTP '+file.status);
-           const blob=await file.blob(),url=URL.createObjectURL(blob);
-           const download=document.createElement('a');
-           download.href=url;download.download='GTA_VI_'+job.slice(0,8)+'.mp4';
-           document.body.appendChild(download);download.click();download.remove();
-           window.setTimeout(()=>URL.revokeObjectURL(url),30000);
-         }catch(e){show('Téléchargement MP4 : '+e.message,true)}
-         finally{mp4.disabled=false}
-       });
-       result.replaceChildren(a,mp4);
+           const response=await fetch('/video/jobs/'+job+'/download',{headers:{'X-Admin-Token':el('token').value.trim()}});
+           if(!response.ok)throw Error('Téléchargement MP4 — HTTP '+response.status);
+           const url=URL.createObjectURL(await response.blob());
+           const link=document.createElement('a');
+           link.href=url;link.download='gta6-highlight-'+job.slice(0,8)+'.mp4';link.click();
+           setTimeout(()=>URL.revokeObjectURL(url),60000);
+         }catch(error){show(error.message,true)}
+         finally{download.disabled=false}
+       };
+       result.replaceChildren(download);
+       try{
+         const link=await api('/video/jobs/'+job+'/export-link',{method:'POST'});
+         const a=document.createElement('a');
+         a.href=link.url;a.target='_blank';a.rel='noopener noreferrer';
+         a.textContent='Télécharger le ZIP';a.className='download';
+         result.append(a);
+       }catch(error){
+         const message=document.createElement('p');
+         message.textContent='ZIP indisponible — '+error.message;
+         result.append(message);
+       }
        return;
      }
      if(state.state==='failed'){
@@ -515,7 +545,7 @@ progress{margin-top:18px;width:100%;height:20px}
          });
          result.append(retry,noSpeech);
        }
-       throw Error('Le montage a échoué ('+(state.error||'erreur serveur')+'). Job : '+job);
+       throw Error('Le montage a échoué ('+(state.error_detail||state.error||'erreur serveur')+'). Job : '+job);
      }
      await new Promise(resolve=>setTimeout(resolve,6000));
    }
@@ -567,9 +597,18 @@ progress{margin-top:18px;width:100%;height:20px}
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
        clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
-       hook_text:el('hook').value
+       hook_text:el('hook').value,vision_enabled:el('vision').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
+     const chatFile=el('chat').files[0];
+     if(chatFile){
+       if(chatFile.size>512*1024)throw Error('Le fichier de chat dépasse 512 Ko.');
+       const chat=JSON.parse(await chatFile.text());
+       if(!Array.isArray(chat)||chat.length>25000||chat.some(t=>!Number.isFinite(t)||t<0||t>43200)){
+         throw Error('Le chat doit être une liste de 25 000 horodatages maximum, exprimés en secondes.');
+       }
+       params.chat_seconds=chat;
+     }
      const started=await api('/video/uploads/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
      const job=started.job_id,chunkSize=started.chunk_size_bytes;
      showJob(job);

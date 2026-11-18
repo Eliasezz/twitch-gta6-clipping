@@ -16,7 +16,7 @@ from .video_pipeline import VideoPipelineError, render_mp4, probe
 from .publishing import publication_package, sign_share_link, verify_share_link
 from .video_exports import export_bundle, ExportError
 import hashlib
-from .captions import openai_auth_status
+from .captions import CaptionError, openai_auth_status
 
 router = APIRouter(prefix="/video", tags=["video-workflow"])
 VIDEO_DIR = Path(os.getenv("VIDEO_STORAGE_DIR", "/data/videos"))
@@ -93,11 +93,15 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
         try:
             source = folder / "source.mp4"
             output = folder / "vertical.mp4"
-            probe(source)
+            chat_file = folder / "chat-seconds.json"
+            chat_seconds = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else ()
             result = render_mp4(source, output, caption_text=caption_text,
                                 clip_seconds=clip_seconds, width=width, height=height,
                                 auto_subtitles=auto_subtitles, music_enabled=music_enabled,
-                                hook_text=hook_text)
+                                hook_text=hook_text,
+                                subtitles_required=status.get("subtitles_required", False),
+                                chat_seconds=chat_seconds,
+                                vision_enabled=status.get("vision_enabled", False))
             status.update({"state": "done", "result": result,
                            "publication_status": "review_required",
                            "transcription_warning": result.get("transcription_warning"),
@@ -105,12 +109,15 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
         except Exception as error:
             # Mark all worker failures, including subprocess timeouts, as failed.
             status.update({"state": "failed", "error": type(error).__name__})
+            if isinstance(error, CaptionError):
+                status["error_detail"] = str(error)
             print("Video job failed:", job_id, type(error).__name__, str(error)[-500:])
         finally:
             # Preserve the uploaded source when a render fails, so the user can
             # retry with corrected settings without uploading a large VOD again.
             if status.get("state") == "done":
                 (folder / "source.mp4").unlink(missing_ok=True)
+                (folder / "chat-seconds.json").unlink(missing_ok=True)
                 status["source_retained_for_retry"] = False
                 print("Video job finished:", job_id,
                       (status.get("result") or {}).get("duration_seconds"))
@@ -292,7 +299,7 @@ def video_ready():
     return {
         "available": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
         "configured_for_private_jobs": bool(os.getenv("POLL_ADMIN_TOKEN", "").strip()),
-        "workflow": "authorized-file-upload -> audio-activity highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
+        "workflow": "authorized-file-upload -> sampled audio, visual changes and optional chat highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
         "auto_speech_transcription": openai_auth_status()["configured"],
         "transcription_authentication_method": openai_auth_status()["method"],
         "transcription_oidc_provider_configured": openai_auth_status()["identity_provider_id_present"],
@@ -333,6 +340,7 @@ def create_video_job(background_tasks: BackgroundTasks,
         raise HTTPException(422, "clip_seconds must be 3 to 90")
     # If omitted from Swagger, auto-select transcription whenever a platform
     # key is configured. Explicit false still avoids any paid transcription.
+    subtitles_required = auto_subtitles is True
     speech_auth_ready = openai_auth_status()["configured"]
     if auto_subtitles is None:
         auto_subtitles = speech_auth_ready
@@ -388,6 +396,7 @@ def create_video_job(background_tasks: BackgroundTasks,
               "original_filename": (video.filename or "source.mp4")[:128],
               "requested_duration_seconds": clip_seconds,
               "auto_subtitles_requested": auto_subtitles,
+              "subtitles_required": subtitles_required,
               "music_original_generated": music_enabled,
               "hook_text": hook_text,
               "publication_status": "not_ready"}
@@ -420,10 +429,13 @@ def retry_failed_video_job(
             raise HTTPException(409, "Failed video source is not available for retry")
         if auto_subtitles is None:
             auto_subtitles = bool(status.get("auto_subtitles_requested", False))
+        else:
+            status["subtitles_required"] = auto_subtitles
         if auto_subtitles and not openai_auth_status()["configured"]:
             raise HTTPException(503, "OpenAI transcription is not configured")
         status["state"] = "queued"
         status.pop("error", None)
+        status.pop("error_detail", None)
         status["auto_subtitles_requested"] = auto_subtitles
         status["publication_status"] = "not_ready"
         _write_status(_job_dir(job_id), status)

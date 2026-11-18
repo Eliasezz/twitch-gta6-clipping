@@ -86,8 +86,8 @@ def _openai_client():
 def _request_whisper(audio_file: Path, *, translate=False):
     # The official Python SDK manages both OIDC token exchange and API keys.
     from openai import APIConnectionError, APIStatusError, OpenAIError
-    client = _openai_client()
     try:
+        client = _openai_client()
         with audio_file.open("rb") as stream:
             if translate:
                 response = client.audio.translations.create(
@@ -190,5 +190,7 @@ def transcribe_english(source, *, start=0.0, duration=65.0, scratch_dir=None):
         if not words:
             raise CaptionError("English translation has no timestamped segments")
         return words, "english_translated_segment_timed", language
+    except subprocess.TimeoutExpired as exc:
+        raise CaptionError("Speech audio extraction timed out") from exc
     finally:
         audio.unlink(missing_ok=True)

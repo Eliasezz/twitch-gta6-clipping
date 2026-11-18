@@ -57,42 +57,6 @@ def probe(path):
     return {"duration": duration, "width": width, "height": height, "has_audio": has_audio}
 
 
-def pick_highlight_start(path, duration, clip_seconds):
-    """Maximize non-silent audio; this does not claim semantic/viral ranking."""
-    if duration <= clip_seconds:
-        return 0.0, "entire_video"
-    analysis_span = min(duration, 180.0)
-    result = subprocess.run([
-        _check_binary("ffmpeg"), "-hide_banner", "-nostdin", "-i", str(path),
-        "-t", str(analysis_span), "-vn", "-af", "silencedetect=noise=-32dB:d=0.35",
-        "-f", "null", "-"
-    ], capture_output=True, text=True, timeout=80, check=False)
-    if result.returncode:
-        return 0.0, "first_window_fallback"
-    intervals = []
-    begin = None
-    for line in result.stderr.splitlines():
-        match = re.search(r"silence_start:\s*([0-9.]+)", line)
-        if match:
-            begin = float(match.group(1))
-        match = re.search(r"silence_end:\s*([0-9.]+)", line)
-        if match and begin is not None:
-            intervals.append((begin, float(match.group(1))))
-            begin = None
-    if begin is not None:
-        intervals.append((begin, analysis_span))
-    max_start = max(0.0, analysis_span - clip_seconds)
-    candidates = [min(float(i * 3), max_start) for i in range(int(max_start // 3) + 2)]
-    best_start, best_score = 0.0, float("-inf")
-    for candidate in candidates:
-        silence = sum(max(0.0, min(candidate + clip_seconds, end) - max(candidate, start))
-                      for start, end in intervals)
-        score = clip_seconds - silence - candidate * 0.0001
-        if score > best_score:
-            best_start, best_score = candidate, score
-    return round(best_start, 3), "audio_activity_heuristic"
-
-
 def _ass_escape(value):
     value = re.sub(r"[\r\n]+", " ", value)
     return value.replace("\\", "\\\\").replace("{", "(").replace("}", ")").strip()
@@ -164,6 +128,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     allotted = max(0.4, duration - 0.2)
     max_cards = max(1, int(allotted / 0.45))
     chunks = chunks[:max_cards]
+    if not chunks:
+        destination.write_text(header + "\n".join(extras) + "\n", encoding="utf-8")
+        return bool(extras)
     card_length = allotted / len(chunks)
     lines = []
     for index, chunk in enumerate(chunks):
@@ -184,7 +151,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
-               dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text=""):
+               dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text="",
+               subtitles_required=False, chat_seconds=(), vision_enabled=False):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
@@ -195,65 +163,49 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     info = probe(source)
     if info["duration"] > MAX_SOURCE_SECONDS:
         raise VideoPipelineError("Source exceeds 12-hour input limit")
-    # Never fake a minute-long eligible-looking clip by stretching or looping short footage.
     if clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
         raise VideoPipelineError(
             f"Source is only {info['duration']:.1f} seconds; upload at least {clip_seconds} seconds of footage"
         )
     duration = min(float(clip_seconds), info["duration"])
-    start, selection = pick_highlight_start(source, info["duration"], duration)
+    from .highlight_signals import select_window
+    start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled)
+    selection = "sampled_audio_visual_chat" if start or duration < info["duration"] else "entire_video"
     destination.parent.mkdir(parents=True, exist_ok=True)
     ass_file = destination.with_suffix(".ass")
     subtitle_mode, detected_language = "none", None
-    reaction_score = None
-    transcript_warning = None
+    caption_warning = None
+    transcription_warning = None
+    has_captions = False
     if auto_subtitles:
-        # Subtitle API failures must not destroy a licensed edit. Render the
-        # real source audio, original music and intro; never invent dialogue.
         from .captions import CaptionError, transcribe_english
-        from .highlight import choose_speech_window, window_words
         try:
-            analysis_duration = min(info["duration"], max(180.0, duration))
-            transcript_words, subtitle_mode, detected_language = transcribe_english(
-                source, start=0.0, duration=analysis_duration,
-                scratch_dir=destination.parent,
+            if not info["has_audio"]:
+                raise CaptionError("Source video has no audio track")
+            words, subtitle_mode, detected_language = transcribe_english(
+                source, start=start, duration=duration, scratch_dir=destination.parent,
             )
-            new_start, speech_rank = choose_speech_window(
-                transcript_words, analysis_duration, duration,
-            )
-            if new_start is not None:
-                start = new_start
-                selection = speech_rank["method"]
-                reaction_score = speech_rank.get("reaction_score")
-            aligned_words = window_words(transcript_words, start, duration)
             has_captions = make_ass(
-                "", duration, ass_file, width, height,
-                timed_words=aligned_words, hook_text=hook_text,
+                "", duration, ass_file, width, height, timed_words=words, hook_text=hook_text,
             )
-            if not has_captions:
-                raise CaptionError("No real word timestamps in the chosen highlight")
-        except CaptionError as exc:
-            # A 429 can mean insufficient API credits, not an expired key.
-            # Honest fallback: no fabricated transcript or translation.
-            detail = str(exc).lower()
+        except CaptionError as error:
+            if subtitles_required:
+                raise
+            caption_warning = str(error)
+            detail = caption_warning.lower()
             if "quota" in detail or "rate limit" in detail:
-                transcript_warning = "openai_quota_or_rate_limit"
+                transcription_warning = "openai_quota_or_rate_limit"
             elif "authentication" in detail or "unauthorized" in detail:
-                transcript_warning = "openai_authentication"
+                transcription_warning = "openai_authentication"
             else:
-                transcript_warning = "speech_transcription_unavailable"
-            subtitle_mode = "not_available"
+                transcription_warning = "speech_transcription_unavailable"
             detected_language = None
-            selection = "audio_activity_fallback"
-            start, _ = pick_highlight_start(source, info["duration"], duration)
-            reaction_score = None
-            has_captions = make_ass(
-                "", duration, ass_file, width, height, hook_text=hook_text,
-            )
-    else:
-        has_captions = make_ass(caption_text, duration, ass_file, width, height,
-                                hook_text=hook_text)
-        subtitle_mode = "approximate_supplied_text" if caption_text and has_captions else "none"
+    if not has_captions:
+        has_captions = make_ass(caption_text, duration, ass_file, width, height, hook_text=hook_text)
+        if caption_text.strip():
+            subtitle_mode = "approximate_supplied_text"
+        else:
+            subtitle_mode = "not_available" if transcription_warning else "none"
     filters = [
         "fps=24",
         f"scale={width}:{height}:force_original_aspect_ratio=increase",
@@ -295,7 +247,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         "-vf", ",".join(filters),
         "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast", "-crf", "25",
         "-pix_fmt", "yuv420p", "-r", "24", "-c:a", "aac", "-b:a", "96k",
-        "-movflags", "+faststart", "-shortest", str(destination),
+        "-movflags", "+faststart", str(destination),
     ])
     try:
         _execute(command, timeout=720 if duration >= 45 else 270)
@@ -313,8 +265,10 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "width": width, "height": height, "fps": 24,
             "caption_mode": subtitle_mode,
             "detected_language": detected_language,
-            "reaction_keyword_score": reaction_score,
-            "transcription_warning": transcript_warning,
+            "reaction_keyword_score": None,
+            "highlight_analysis": analysis,
+            "caption_warning": caption_warning,
+            "transcription_warning": transcription_warning,
             "speech_words_synchronized": subtitle_mode == "english_word_synced",
             "original_music_mixed": bool(music_enabled),
             "hook_text": hook_text[:80],

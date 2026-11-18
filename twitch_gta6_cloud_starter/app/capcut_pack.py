@@ -71,7 +71,7 @@ def editor_manifest(job_id, status):
             "edit_mode": data.get("selection_mode"),
             "source_shots": data.get("source_shots", []),
             "subtitle_mode": data.get("caption_mode"),
-            "captions_are_burned_into_video": data.get("caption_mode") not in ("none", "not_available"),
+            "captions_are_burned_into_video": bool(data.get("caption_mode")) and data.get("caption_mode") not in ("none", "not_available"),
             "source_video_filename": status.get("original_filename"),
             "rendered_filename": filename,
             "subtitle_sidecar_filename": srtname if data.get("editable_srt") else None,

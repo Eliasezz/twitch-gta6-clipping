@@ -357,3 +357,49 @@ upload the ready MP4 to Metricool yourself, or let ChatGPT use its connected
 Metricool app once a valid video URL and scheduling instructions are available.
 
 Do not put `POLL_ADMIN_TOKEN` or your OpenAI key in a link or a social post.
+
+
+## Easy browser uploader — fixes HTTP 413 for larger videos
+
+Open **https://twitch-gta6-clipping.onrender.com/video/uploader**. This page
+avoids the old 75-MB single-request limit by splitting authorized files into
+6-MB requests. Each request is individually authenticated using
+`X-Admin-Token` with `POLL_ADMIN_TOKEN` (never your Twitch secret or
+OpenAI key). Your admin token stays only in the current browser page;
+it is not saved to local storage or put into URLs.
+
+1. Retrieve the existing `POLL_ADMIN_TOKEN` from Render Environment.
+2. On the uploader page, paste that value into the private token field.
+3. Select your licensed MP4/MOV/MKV, up to 300 MB by default. The server
+   still requires at least 65 seconds of true source footage for a 65s edit,
+   and sources cannot exceed 15 minutes.
+4. Leave `65` seconds, English auto-subtitles and original music enabled.
+   Confirm you own the video or have explicit reuse permission.
+5. Click **Envoyer et monter la vidéo** once. The browser streams 6MB
+   pieces and shows upload percentage and the generated `job_id`.
+   On complete upload it starts the **existing** FFmpeg renderer,
+   monitors `GET /video/jobs/{job_id}`, and shows a direct 30-minute ZIP
+   download button upon success.
+6. Open the ZIP to obtain the final MP4, title, YouTube description,
+   TikTok caption and cover image (if produced).
+
+The legacy `POST /video/jobs` Swagger method continues to have a **75 MB
+default / 120 MB maximum single-request limit**. Use the new browser page
+for larger uploads to avoid HTTP 413. The new route is restricted to
+`VIDEO_CHUNKED_MAX_MB` (default 300, hard maximum 350), and checks the
+service disk space before accepting a file. The server has a 1GB disk, so
+delete/download old files first if HTTP 507 reports insufficient space.
+An upload rejected by the old `POST /video/jobs` with HTTP 413 is **not
+recoverable**, because the partial file was removed and no processing job
+was created. It must be resent through the browser page once.
+
+API endpoints for alternative custom clients:
+- `POST /video/uploads/start` (JSON filename, size_bytes, authorized,
+  clip_seconds, auto_subtitles, music_enabled, hook_text)
+- `POST /video/uploads/{job_id}/chunk?index=0` (multipart `file`)
+- `POST /video/uploads/{job_id}/finish` (launch background edit)
+- `GET /video/jobs/{job_id}` (status; requires admin header)
+
+Never share `POLL_ADMIN_TOKEN` or Twitch/OpenAI secrets in chat or
+screenshots. This feature does not bypass copyright licensing or automate
+publishing without configured creator OAuth and Metricool API access.

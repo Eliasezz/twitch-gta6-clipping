@@ -250,6 +250,8 @@ def video_ready():
         "recommended_tiktok_duration_seconds": 65,
         "max_clip_duration_seconds": 90,
         "demo_without_upload": "/video/demo",
+        "large_video_uploader": "/video/uploader",
+        "max_chunked_video_upload_mb": min(350, max(32, int(os.getenv("VIDEO_CHUNKED_MAX_MB", "300")))),
         "media_handoff": "review_required_before_signed_metricool_link",
         "manual_export": "GET /video/jobs/{job_id}/export and POST /video/jobs/{job_id}/export-link",
         "production_selftest": _selftest_summary(),

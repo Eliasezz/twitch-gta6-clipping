@@ -60,8 +60,10 @@ app = FastAPI(
 # The video workflow is isolated from the scheduled Twitch metadata poller.
 from .video_routes import router as video_router
 from .autopilot import router as autopilot_router
+from .large_upload import router as large_upload_router
 app.include_router(video_router)
 app.include_router(autopilot_router)
+app.include_router(large_upload_router)
 
 
 # ============================================================

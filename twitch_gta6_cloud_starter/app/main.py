@@ -224,6 +224,16 @@ def init_database():
             ON clips(source_type)
         """)
 
+        # Les anciennes versions marquaient "eligible" sur le seul nombre
+        # de vues. Réinitialiser ces drapeaux historiques : le prochain poll
+        # ne les réactivera que si le créateur figure dans l'allowlist.
+        connection.execute("""
+            UPDATE clips
+            SET eligible_for_processing = 0
+            WHERE eligible_for_processing IS NULL
+               OR eligible_for_processing != 0
+        """)
+
         connection.commit()
 
         print("SQLite : migration terminée.")

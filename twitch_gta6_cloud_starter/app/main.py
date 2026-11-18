@@ -52,10 +52,14 @@ TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_API_URL = "https://api.twitch.tv/helix"
 
 app = FastAPI(
-    title="Twitch GTA VI Clipping Radar",
-    description="Radar automatique de clips Twitch autour de GTA VI.",
-    version="1.2.0"
+    title="Twitch GTA VI Clipping + Video Workflow",
+    description="Radar Twitch et montage MP4 de fichiers autorisés.",
+    version="1.3.0"
 )
+
+# The video workflow is isolated from the scheduled Twitch metadata poller.
+from .video_routes import router as video_router
+app.include_router(video_router)
 
 
 # ============================================================

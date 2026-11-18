@@ -1,0 +1,58 @@
+name: Verify Mac export and live service
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verify-mac-export-live.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: twitch_gta6_cloud_starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python requirements
+        run: pip install -r requirements.txt
+      - name: Run ZIP export and package security tests
+        run: python -m unittest discover -s tests -v
+      - name: Verify published server routes without secrets
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import urllib.request
+          root="https://twitch-gta6-clipping.onrender.com"
+          for attempt in range(20):
+              try:
+                  with urllib.request.urlopen(root+"/openapi.json", timeout=20) as f:
+                      paths=json.load(f)["paths"]
+                  with urllib.request.urlopen(root+"/video/ready", timeout=20) as f:
+                      status=json.load(f)
+                  expected=(
+                      "/video/jobs/{job_id}/export",
+                      "/video/jobs/{job_id}/export-link",
+                      "/video/export-download/{job_id}",
+                      "/video/jobs",
+                      "/video/jobs/{job_id}/approve",
+                  )
+                  checks={p:p in paths for p in expected}
+                  print(json.dumps({
+                      "ffmpeg":status.get("available"),
+                      "admin_auth":status.get("configured_for_private_jobs"),
+                      "speech_auth":status.get("auto_speech_transcription"),
+                      "routes":checks,
+                  }),flush=True)
+                  if all(checks.values()) and status.get("available"):
+                      print("SUCCESS: Downloadable Mac ZIP routes are live",flush=True)
+                      break
+              except Exception as e:
+                  print("Retry",type(e).__name__,flush=True)
+              time.sleep(10)
+          else:
+              raise RuntimeError("Export endpoints absent from production")
+          PY

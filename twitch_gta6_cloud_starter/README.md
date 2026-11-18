@@ -144,3 +144,54 @@ videos for the first test. Old completed video jobs are removed after 48 hours
 by the next successful upload request. The workflow processes only uploaded footage;
 automatic downloads require separately authorized Twitch broadcaster/editor
 OAuth and appropriate licensing. Social publishing remains disabled.
+
+
+## English captions and reaction selection (optional speech service)
+
+- The **existing** `POST /video/jobs` endpoint now also accepts
+  `auto_subtitles=true`. This runs speech transcription, uses likely reaction
+  expressions and spoken-word density to choose a highlight in the first
+  180 seconds, then overlays English subtitle words with colored active-word
+  karaoke effects. It will not claim to detect guaranteed viral moments.
+- Add `OPENAI_API_KEY` to **Render Environment** to enable this feature.
+  Use an OpenAI Platform API key created for this project; **ChatGPT Plus
+  does not include API usage**. Nothing is charged by this application when
+  `auto_subtitles=false`.
+- For English speech, Whisper's verbose JSON word timestamps support
+  near-word-level synchronization. For other languages, the translation API
+  creates **English captions timed approximately to spoken segments**, not
+  exact English per-word alignment. Review subtitles before publishing.
+- `whisper-1` is deprecated and presently scheduled to stop
+  **2027-02-26** (per OpenAI's API documentation). Replace the transcription
+  adapter with a supported word-timestamp model before that date.
+- Without an API key, you can still render videos with manually supplied
+  `caption_text` (approximate timing) and run `POST /video/demo` for free.
+  A request asking for `auto_subtitles=true` without the key fails early
+  with HTTP 503 instead of producing misleading unsynchronized captions.
+
+## Metricool publishing handoff — gated
+
+The TikTok and YouTube accounts may already be connected in the Metricool
+plugin in ChatGPT, but this **does not grant the Render server** direct access
+to its plugin connection or publishing tokens. We do not store those tokens.
+
+1. Upload a permitted real video using `POST /video/jobs`, confirm
+   `authorized=true`, optionally enable `auto_subtitles=true`, and wait for
+   the MP4 job to reach `done`. The test/demo route cannot be published.
+2. Call authenticated `GET /video/jobs/{job_id}/publication` to retrieve
+   the draft TikTok caption, YouTube title and description and review checklist.
+3. **Only after personally checking the edited video and rights**, call
+   authenticated `POST /video/jobs/{job_id}/approve`, setting
+   `rights_confirmed=true` and `editorial_reviewed=true`.
+4. The response includes a time-limited direct MP4 URL (`signed_media_url`)
+   valid for 1 hour and the prepared post metadata. Give this URL and the
+   desired publishing time to Metricool via ChatGPT, or schedule it yourself
+   in Metricool. The temporary URL grants access to whoever has it until it
+   expires; keep it private.
+5. YouTube and TikTok publishing are **not** performed by the Render server.
+   Scheduling/publishing require the Metricool API/app workflow and platform
+   consent. No video will be posted without an explicit publishing action.
+
+Videos of 65 seconds can meet a duration threshold, but a streamer's video
+with only cropping, zooms and captions can still fail originality or reuse
+policies. Creator permission and substantive original added value are critical.

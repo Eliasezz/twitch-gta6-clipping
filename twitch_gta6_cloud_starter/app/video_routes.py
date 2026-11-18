@@ -13,6 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from fastapi.responses import FileResponse
 
 from .video_pipeline import VideoPipelineError, render_mp4, probe
+from .publishing import publication_package, sign_share_link, verify_share_link
 
 router = APIRouter(prefix="/video", tags=["video-workflow"])
 VIDEO_DIR = Path(os.getenv("VIDEO_STORAGE_DIR", "/data/videos"))
@@ -79,7 +80,7 @@ def _read_status(job_id):
         raise HTTPException(500, "Video job metadata unavailable") from exc
 
 
-def _worker(job_id, caption_text, clip_seconds, width=720, height=1280):
+def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_subtitles=False):
     folder = _job_dir(job_id)
     with _render_lock:
         status = _read_status(job_id)
@@ -90,8 +91,10 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280):
             output = folder / "vertical.mp4"
             probe(source)
             result = render_mp4(source, output, caption_text=caption_text,
-                                clip_seconds=clip_seconds, width=width, height=height)
+                                clip_seconds=clip_seconds, width=width, height=height,
+                                auto_subtitles=auto_subtitles)
             status.update({"state": "done", "result": result,
+                           "publication_status": "review_required",
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
         except Exception as error:
             # Mark all worker failures, including subprocess timeouts, as failed.
@@ -227,11 +230,14 @@ def video_ready():
         "available": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
         "configured_for_private_jobs": bool(os.getenv("POLL_ADMIN_TOKEN", "").strip()),
         "workflow": "authorized-file-upload -> audio-activity highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
-        "auto_speech_transcription": False,
+        "auto_speech_transcription": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "transcription_provider": "openai_whisper_1_optional",
+        "transcription_requires_api_key": True,
         "automatic_social_publishing": False,
         "recommended_tiktok_duration_seconds": 65,
         "max_clip_duration_seconds": 90,
         "demo_without_upload": "/video/demo",
+        "media_handoff": "review_required_before_signed_metricool_link",
         "production_selftest": _selftest_summary(),
     }
 
@@ -241,6 +247,7 @@ def create_video_job(background_tasks: BackgroundTasks,
                      video: UploadFile = File(...),
                      authorized: bool = Form(False),
                      caption_text: str = Form(""),
+                     auto_subtitles: bool = Form(False),
                      clip_seconds: int = Form(65),
                      x_admin_token: str | None = Header(default=None)):
     _authorize(x_admin_token)
@@ -248,6 +255,8 @@ def create_video_job(background_tasks: BackgroundTasks,
         raise HTTPException(403, "Confirm you own this media or have explicit reuse permission")
     if clip_seconds < 3 or clip_seconds > 90:
         raise HTTPException(422, "clip_seconds must be 3 to 90")
+    if auto_subtitles and not os.getenv("OPENAI_API_KEY", "").strip():
+        raise HTTPException(503, "Add OPENAI_API_KEY in Render before using auto_subtitles")
     if len(caption_text) > 5000:
         raise HTTPException(413, "Caption text too long")
     if not (video.filename or "").lower().endswith((".mp4", ".mov", ".mkv")):
@@ -291,9 +300,13 @@ def create_video_job(background_tasks: BackgroundTasks,
 
     status = {"job_id": job_id, "state": "queued", "created_at": datetime.now(timezone.utc).isoformat(),
               "input_bytes": amount, "authorized": True,
-              "requested_duration_seconds": clip_seconds}
+              "original_filename": (video.filename or "source.mp4")[:128],
+              "requested_duration_seconds": clip_seconds,
+              "auto_subtitles_requested": auto_subtitles,
+              "publication_status": "not_ready"}
     _write_status(folder, status)
-    background_tasks.add_task(_worker, job_id, caption_text, clip_seconds)
+    background_tasks.add_task(_worker, job_id, caption_text, clip_seconds,
+                              auto_subtitles=auto_subtitles)
     return status
 
 
@@ -311,3 +324,70 @@ def download_video_job(job_id: str, x_admin_token: str | None = Header(default=N
     if status.get("state") != "done" or not output.is_file():
         raise HTTPException(409, "MP4 is not available yet")
     return FileResponse(output, media_type="video/mp4", filename=f"gta6-highlight-{job_id[:8]}.mp4")
+
+
+@router.get("/jobs/{job_id}/publication", tags=["publishing-review"])
+def publication_preview(job_id: str, x_admin_token: str | None = Header(default=None)):
+    """Preview a private Metricool-ready draft; does not schedule anything."""
+    _authorize(x_admin_token)
+    status = _read_status(job_id)
+    if status.get("demo"):
+        raise HTTPException(403, "Synthetic tests are not for publication")
+    return publication_package(job_id, status)
+
+
+@router.post("/jobs/{job_id}/approve", tags=["publishing-review"])
+def approve_publication(
+    job_id: str,
+    rights_confirmed: bool = Form(False),
+    editorial_reviewed: bool = Form(False),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Approve a real licensed edit and create a 1-hour URL for Metricool ingest.
+
+    Requires explicit rights and editorial confirmation. Never auto-publishes.
+    """
+    _authorize(x_admin_token)
+    status = _read_status(job_id)
+    if status.get("demo") or status.get("authorized") is not True:
+        raise HTTPException(403, "Only explicitly authorized real clips can be shared")
+    if status.get("state") != "done":
+        raise HTTPException(409, "MP4 has not finished rendering")
+    if not (rights_confirmed and editorial_reviewed):
+        raise HTTPException(403, "Rights and editorial review must both be confirmed")
+    output = _job_dir(job_id) / "vertical.mp4"
+    if not output.exists():
+        raise HTTPException(404, "Video output missing")
+    status["publication_status"] = "approved_for_scheduling"
+    status["editorial_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    _write_status(_job_dir(job_id), status)
+    signed = sign_share_link(job_id, os.environ["POLL_ADMIN_TOKEN"])
+    package = publication_package(job_id, status)
+    package.update({"signed_media_url": signed["url"],
+                    "signed_url_expires_unix": signed["expires_unix"],
+                    "note": "Submit this temporary link to Metricool before it expires. "
+                            "This approval does not publish or schedule the video."})
+    return package
+
+
+@router.get("/shared/{job_id}", tags=["publishing-review"])
+def temporarily_shared_video(job_id: str, expires: int, signature: str):
+    """Time-limited media URL for Metricool ingest; no long-lived public link."""
+    if not verify_share_link(
+        job_id, os.getenv("POLL_ADMIN_TOKEN", ""), expires, signature
+    ):
+        raise HTTPException(403, "Invalid or expired media link")
+    status = _read_status(job_id)
+    if status.get("state") != "done" or status.get("publication_status") != "approved_for_scheduling":
+        raise HTTPException(403, "Video has not been approved for distribution")
+    if status.get("demo") or status.get("authorized") is not True:
+        raise HTTPException(403, "Synthetic or unauthorized video cannot be shared")
+    output = _job_dir(job_id) / "vertical.mp4"
+    if not output.is_file():
+        raise HTTPException(404, "Video output unavailable")
+    return FileResponse(
+        output, media_type="video/mp4",
+        filename=f"gta6-editorial-{job_id[:8]}.mp4",
+        headers={"Cache-Control": "private, no-store",
+                 "X-Robots-Tag": "noindex, nofollow"},
+    )

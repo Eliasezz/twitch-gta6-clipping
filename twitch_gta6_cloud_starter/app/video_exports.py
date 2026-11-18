@@ -63,6 +63,8 @@ def export_bundle(job_id, job_dir, status):
         try:
             with ZipFile(temp_zip, "w", allowZip64=True) as z:
                 z.write(mp4, dirname + "montage_9x16.mp4", compress_type=ZIP_STORED)
+                for index, clip in enumerate((status.get("result") or {}).get("clips", [])[1:], 2):
+                    z.write(folder / f"vertical-{index}.mp4", dirname + f"montage_{index}_9x16.mp4", compress_type=ZIP_STORED)
                 if cover.is_file():
                     z.write(cover, dirname + "couverture.jpg", compress_type=ZIP_STORED)
                 z.writestr(dirname + "tiktok_description.txt",

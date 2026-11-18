@@ -92,7 +92,7 @@ def _vision_choice(path, duration, candidates):
         return None, "Analyse des images indisponible. Les signaux locaux ont été utilisés."
 
 
-def select_window(path, duration, clip_duration, has_audio, chat_seconds=(), vision_enabled=False):
+def select_window(path, duration, clip_duration, has_audio, chat_seconds=(), vision_enabled=False, section=(0, 1)):
     # Fully scan short files. Distribute a fixed decode budget over long recordings.
     step = 2
     span = min(24, duration)
@@ -161,7 +161,10 @@ def select_window(path, duration, clip_duration, has_audio, chat_seconds=(), vis
     ranked = sorted(signals, key=lambda t: (-sum(
         weight * score for weight, score in zip(weights, signals[t])
     ), t))
-    event = ranked[0] if ranked else 0
+    part, total = section
+    lower, upper = duration * part / total, duration * (part + 1) / total
+    ranked = [t for t in ranked if lower <= t < upper]
+    event = ranked[0] if ranked else lower
     vision_result, vision_warning = None, None
     if vision_enabled:
         candidates = []
@@ -173,7 +176,7 @@ def select_window(path, duration, clip_duration, has_audio, chat_seconds=(), vis
         vision_result, vision_warning = _vision_choice(path, duration, candidates)
         if vision_result:
             event = vision_result["event_seconds"]
-    start = max(0.0, min(duration - clip_duration, event - clip_duration * 0.30))
+    start = max(lower, min(upper - clip_duration, event - clip_duration * 0.30))
     return round(start, 3), {
         "event_seconds": event,
         "sampled_source_seconds": round(sum(min(span, duration - t) for t in starts), 2),

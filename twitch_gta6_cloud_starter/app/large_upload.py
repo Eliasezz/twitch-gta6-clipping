@@ -35,6 +35,8 @@ class StartUpload(BaseModel):
     music_enabled: bool = True
     vision_enabled: bool = False
     voiceover: bool = False
+    clip_count: int = Field(default=1, ge=1, le=3)
+    face_bottom_left: bool = False
     hook_text: str = Field(default="GTA VI | BIG REACTION", max_length=80)
     caption_text: str = Field(default="", max_length=5000)
     chat_seconds: list[Annotated[float, Field(ge=0, le=MAX_SOURCE_SECONDS, allow_inf_nan=False)]] = Field(default_factory=list, max_length=25000)
@@ -139,6 +141,8 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
             "auto_subtitles": bool(auto_subtitles),
             "music_enabled": bool(data.music_enabled),
             "vision_enabled": data.vision_enabled,
+            "clip_count": data.clip_count,
+            "face_bottom_left": data.face_bottom_left,
             "voiceover": data.voiceover,
             "hook_text": data.hook_text,
             "caption_text": data.caption_text,
@@ -244,6 +248,8 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             raise HTTPException(422, "Video must be at least as long as the requested clip")
         if meta.get("chat_seconds"):
             (folder / "chat-seconds.json").write_text(json.dumps(meta["chat_seconds"]), encoding="utf-8")
+        if meta.get("clip_count", 1) > 1 and info["duration"] < meta["clip_count"] * meta["clip_seconds"]:
+            raise HTTPException(422, "Réduis la durée ou le nombre de clips pour obtenir des extraits distincts.")
         temp_file.rename(folder / "source.mp4")
         status = routes._read_status(job_id)
         status.update({
@@ -254,6 +260,8 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             "auto_subtitles_requested": meta["auto_subtitles"],
             "subtitles_required": meta.get("subtitles_required", False),
             "vision_enabled": meta.get("vision_enabled", False),
+            "clip_count": meta.get("clip_count", 1),
+            "face_bottom_left": meta.get("face_bottom_left", False),
             "voiceover": meta.get("voiceover", False),
             "music_original_generated": meta["music_enabled"],
             "hook_text": meta["hook_text"],
@@ -369,6 +377,8 @@ progress{margin-top:18px;width:100%;height:20px}
 <label for="video">Vidéo source (MP4, MOV ou MKV)</label><input id="video" type="file" accept=".mp4,.mov,.mkv,video/*">
 <label for="chat">Chat horodaté (JSON facultatif)</label><input id="chat" type="file" accept=".json,application/json">
 <p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
+<label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
+<label><input id="faceLeft" type="checkbox"> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
 <label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="65">
 <label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
 <label><input id="voiceover" type="checkbox" checked> Lire l’accroche en voix off anglaise</label>
@@ -492,16 +502,17 @@ progress{margin-top:18px;width:100%;height:20px}
        if(state.result.caption_warning)summary.push('Sous-titres indisponibles — '+state.result.caption_warning);
        show('Job : '+job+'\nMontage terminé.\n'+summary.join('\n'));
        const download=document.createElement('button');
-       download.textContent='Télécharger le MP4';
+       const batch=state.result.clips?.length>1;
+       download.textContent=batch?'Télécharger les '+state.result.clips.length+' clips (ZIP)':'Télécharger le MP4';
        download.title='Obtenir un lien MP4 seul';
        download.onclick=async()=>{
          download.disabled=true;
          try{
-           const response=await fetch('/video/jobs/'+job+'/download',{headers:{'X-Admin-Token':el('token').value.trim()}});
+           const response=await fetch('/video/jobs/'+job+(batch?'/export':'/download'),{headers:{'X-Admin-Token':el('token').value.trim()}});
            if(!response.ok)throw Error('Téléchargement MP4 — HTTP '+response.status);
            const url=URL.createObjectURL(await response.blob());
            const link=document.createElement('a');
-           link.href=url;link.download='gta6-highlight-'+job.slice(0,8)+'.mp4';link.click();
+           link.href=url;link.download='gta6-highlight-'+job.slice(0,8)+(batch?'.zip':'.mp4');link.click();
            setTimeout(()=>URL.revokeObjectURL(url),60000);
          }catch(error){show(error.message,true)}
          finally{download.disabled=false}
@@ -604,7 +615,7 @@ progress{margin-top:18px;width:100%;height:20px}
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
        clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
-       hook_text:el('hook').value,vision_enabled:el('vision').checked,voiceover:el('voiceover').checked
+       hook_text:el('hook').value,vision_enabled:el('vision').checked,voiceover:el('voiceover').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
      const chatFile=el('chat').files[0];

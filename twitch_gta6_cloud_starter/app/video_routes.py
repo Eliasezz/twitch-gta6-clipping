@@ -95,14 +95,25 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
             output = folder / "vertical.mp4"
             chat_file = folder / "chat-seconds.json"
             chat_seconds = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else ()
-            result = render_mp4(source, output, caption_text=caption_text,
-                                clip_seconds=clip_seconds, width=width, height=height,
-                                auto_subtitles=auto_subtitles, music_enabled=music_enabled,
-                                hook_text=hook_text,
-                                subtitles_required=status.get("subtitles_required", False),
-                                chat_seconds=chat_seconds,
-                                voiceover=status.get("voiceover", False),
-                                vision_enabled=status.get("vision_enabled", False))
+            clips = []
+            count = status.get("clip_count", 1)
+            for index in range(count):
+                if index:
+                    output = folder / f"vertical-{index + 1}.mp4"
+                clip = render_mp4(source, output, caption_text=caption_text,
+                                    clip_seconds=clip_seconds, width=width, height=height,
+                                    auto_subtitles=auto_subtitles, music_enabled=music_enabled,
+                                    hook_text=hook_text,
+                                    subtitles_required=status.get("subtitles_required", False),
+                                    chat_seconds=chat_seconds,
+                                    section=(index, count),
+                                    face_bottom_left=status.get("face_bottom_left", False),
+                                    voiceover=status.get("voiceover", False),
+                                    vision_enabled=status.get("vision_enabled", False))
+                clips.append(clip)
+            result = dict(clips[0])
+            if count > 1:
+                result["clips"] = clips
             status.update({"state": "done", "result": result,
                            "publication_status": "review_required",
                            "transcription_warning": result.get("transcription_warning"),

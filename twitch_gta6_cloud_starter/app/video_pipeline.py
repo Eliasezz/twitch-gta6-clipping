@@ -158,7 +158,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
                dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text="",
-               subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False):
+               subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False, section=(0, 1), face_bottom_left=False):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
@@ -175,7 +175,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         )
     duration = min(float(clip_seconds), info["duration"])
     from .highlight_signals import select_window
-    start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled)
+    start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
     selection = "sampled_audio_visual_chat" if start or duration < info["duration"] else "entire_video"
     destination.parent.mkdir(parents=True, exist_ok=True)
     ass_file = destination.with_suffix(".ass")
@@ -218,7 +218,15 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         f"crop={width}:{height}",
         "setsar=1"
     ]
-    if dynamic_zoom:
+    if face_bottom_left:
+        half = height // 2
+        filters = [
+            "fps=24,split[game][camera];"
+            f"[game]scale={width}:{half}:force_original_aspect_ratio=increase,crop={width}:{half},setsar=1[g];"
+            f"[camera]crop=iw*0.33:ih*0.46:0:ih-oh,scale={width}:{half},setsar=1[c];"
+            "[g][c]vstack"
+        ]
+    if dynamic_zoom and not face_bottom_left:
         filters.append(
             f"zoompan=z='1.025+0.045*abs(sin(on/15))':"
             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps=24"
@@ -294,7 +302,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "voiceover_warning": "Voix off indisponible." if voiceover and not voice_ready else None,
             "original_music_mixed": bool(music_enabled),
             "hook_text": hook_text[:80],
-            "dynamic_zoom": dynamic_zoom,
+            "dynamic_zoom": dynamic_zoom and not face_bottom_left,
             "minute_plus": output_info["duration"] > 60.0,
         }
     finally:

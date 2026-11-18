@@ -18,8 +18,22 @@ def export_bundle(job_id, job_dir, status):
     mp4 = folder / "vertical.mp4"
     if status.get("state") != "done" or not mp4.is_file():
         raise ExportError("Edited video is not finished")
-    if mp4.stat().st_size < 1024:
-        raise ExportError("Rendered MP4 is unexpectedly small")
+    if mp4.stat().st_size < 1024 or mp4.is_symlink():
+        raise ExportError("Rendered MP4 is invalid")
+    from .media_integrity import sha256_file
+    clips = (status.get("result") or {}).get("clips")
+    clips = clips if clips else [status.get("result") or {}]
+    for i, metadata in enumerate(clips, 1):
+        expected_name = "vertical.mp4" if i == 1 else f"vertical-{i}.mp4"
+        item = folder / expected_name
+        if (metadata.get("job_id") not in (None, job_id)
+                or metadata.get("file") not in (None, expected_name)
+                or not item.is_file() or item.is_symlink()
+                or item.resolve().parent != folder.resolve()):
+            raise ExportError("An exported video is missing or belongs to another job")
+        expected_hash = (metadata.get("output_validation") or {}).get("output_sha256")
+        if expected_hash and sha256_file(item) != expected_hash:
+            raise ExportError("An exported video changed since validation")
     archive = folder / "ready-to-publish.zip"
     cover = folder / "cover.jpg"
     package = publication_package(job_id, status)
@@ -63,7 +77,7 @@ def export_bundle(job_id, job_dir, status):
         try:
             with ZipFile(temp_zip, "w", allowZip64=True) as z:
                 z.write(mp4, dirname + "montage_9x16.mp4", compress_type=ZIP_STORED)
-                for index, clip in enumerate((status.get("result") or {}).get("clips", [])[1:], 2):
+                for index, clip in enumerate(clips[1:], 2):
                     z.write(folder / f"vertical-{index}.mp4", dirname + f"montage_{index}_9x16.mp4", compress_type=ZIP_STORED)
                 if cover.is_file():
                     z.write(cover, dirname + "couverture.jpg", compress_type=ZIP_STORED)

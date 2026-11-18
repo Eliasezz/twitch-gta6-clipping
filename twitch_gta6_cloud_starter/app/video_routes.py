@@ -83,7 +83,7 @@ def _read_status(job_id):
         raise HTTPException(500, "Video job metadata unavailable") from exc
 
 
-def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_subtitles=False,
+def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subtitles=False,
             music_enabled=False, hook_text=""):
     folder = _job_dir(job_id)
     with _render_lock:

@@ -440,3 +440,27 @@ watch GET /video/jobs/{job_id} for state=done and the ZIP download link.
 **Important:** For long VODs, the reaction/keyword heuristic currently
 analyses at most the first three minutes. The editor does not yet inspect
 every emotional peak in a multi-hour Twitch broadcast.
+
+
+## OpenAI speech quota fallback (no second source upload)
+
+If the connected OpenAI Platform API refuses a caption request due to
+HTTP 429 / quota or rate limits, the editor **does not invent speech captions**.
+Instead, it can render the licensed source with original soundtrack, vertical
+crop, motion/zoom and opening hook while marking
+`subtitles_pending=true` and `publication_status=review_required_caption_fallback`.
+The source video stays on Render to permit an upgraded transcription later.
+
+Previously failed, permission-confirmed jobs with `error=CaptionError` and
+a retained original file are recovered at startup in **caption-free mode**
+once, without asking the user to upload the same long recording again.
+Use the existing `job_id` under `/video/uploader?job_id=...` and
+`Vérifier ce job_id`. The page displays the ZIP link when done and an
+option to **Réessayer les sous-titres OpenAI** once API billing/quota is
+fixed. The generated publication metadata remains **not ready** until
+subtitle recovery and editorial review are complete.
+
+Check the OpenAI Platform project's limits and billing if API calls return
+quota errors. ChatGPT subscriptions do not include Platform API credits.
+Original creator authorization and TikTok/YouTube originality rules still
+apply; the temporary clip should not be automatically published.

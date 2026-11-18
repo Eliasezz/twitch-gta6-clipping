@@ -148,8 +148,11 @@ OAuth and appropriate licensing. Social publishing remains disabled.
 
 ## English captions and reaction selection (optional speech service)
 
-- The **existing** `POST /video/jobs` endpoint now also accepts
-  `auto_subtitles=true`. This runs speech transcription, uses likely reaction
+- The **existing** `POST /video/jobs` endpoint accepts
+  `auto_subtitles`. When left blank, subtitles are automatically enabled
+  only if `OPENAI_API_KEY` exists in Render. Set `auto_subtitles=false`
+  explicitly to avoid a paid transcription request; set true to require
+  transcription and receive a clear error if a key is missing. This runs speech transcription, uses likely reaction
   expressions and spoken-word density to choose a highlight in the first
   180 seconds, then overlays English subtitle words with colored active-word
   karaoke effects. It will not claim to detect guaranteed viral moments.

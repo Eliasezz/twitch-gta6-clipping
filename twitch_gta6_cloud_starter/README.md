@@ -370,6 +370,9 @@ it is not saved to local storage or put into URLs.
 
 1. Retrieve the existing `POLL_ADMIN_TOKEN` from Render Environment.
 2. On the uploader page, paste that value into the private token field.
+   Use **Afficher/Masquer** to check your entry and **Copier le token saisi**
+   to copy only the value you personally entered. The server does not expose
+   its private environment variable and the page does not store the token.
 3. Select your licensed MP4/MOV/MKV, up to 300 MB by default. The server
    still requires at least 65 seconds of true source footage for a 65s edit,
    and sources cannot exceed 15 minutes.
@@ -379,7 +382,12 @@ it is not saved to local storage or put into URLs.
    pieces and shows upload percentage and the generated `job_id`.
    On complete upload it starts the **existing** FFmpeg renderer,
    monitors `GET /video/jobs/{job_id}`, and shows a direct 30-minute ZIP
-   download button upon success.
+   download button upon success. After the session starts, a read-only
+   **job_id** field and **Copier le job_id** button appear immediately.
+   Under **J'ai déjà un job_id**, paste a prior ID and click
+   **Vérifier ce job_id** to retrieve its progress or final ZIP without
+   re-uploading the video. Only the ID and a token entered by the user
+   are ever shown; the server admin token is never embedded in HTML.
 6. Open the ZIP to obtain the final MP4, title, YouTube description,
    TikTok caption and cover image (if produced).
 

@@ -54,7 +54,8 @@ TWITCH_API_URL = "https://api.twitch.tv/helix"
 app = FastAPI(
     title="Twitch GTA VI Clipping + Video Workflow",
     description="Radar Twitch et montage MP4 de fichiers autorisés.",
-    version="1.3.0"
+    docs_url="/api/docs",
+    version="1.4.0"
 )
 
 # The video workflow is isolated from the scheduled Twitch metadata poller.
@@ -818,13 +819,20 @@ def startup_event():
     print("Limite clips par source :", MAX_CLIPS)
 
 
+@app.get("/docs", include_in_schema=False)
+def studio_entry():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/video/uploader")
+
+
 @app.get("/")
 def home():
 
     return {
         "service": "Twitch GTA VI Clipping Radar",
         "status": "online",
-        "docs": "/docs",
+        "docs": "/api/docs",
+        "studio": "/video/uploader",
         "health": "/health",
         "clips": "/clips",
         "poll": "POST /poll",

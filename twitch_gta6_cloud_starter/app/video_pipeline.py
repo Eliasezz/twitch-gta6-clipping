@@ -158,7 +158,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
                dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text="",
-               subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False, section=(0, 1), face_bottom_left=False):
+               subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False, section=(0, 1), face_bottom_left=False, rhythmic=False, prepared=False):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
@@ -169,13 +169,28 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     info = probe(source)
     if info["duration"] > MAX_SOURCE_SECONDS:
         raise VideoPipelineError("Source exceeds 12-hour input limit")
-    if clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
+    if not prepared and clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
         raise VideoPipelineError(
             f"Source is only {info['duration']:.1f} seconds; upload at least {clip_seconds} seconds of footage"
         )
     duration = min(float(clip_seconds), info["duration"])
     from .highlight_signals import select_window
-    start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
+    if prepared:
+        start, analysis = 0.0, {}
+    else:
+        start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
+    if rhythmic and duration >= 5:
+        from .rhythm import assemble
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination.parent) as folder:
+            sequence = assemble(source, folder, start, duration, analysis["event_seconds"],
+                                face_bottom_left, width, height)
+            output = render_mp4(sequence, destination, caption_text=caption_text, clip_seconds=clip_seconds,
+                                width=width, height=height, dynamic_zoom=False, auto_subtitles=auto_subtitles,
+                                music_enabled=music_enabled, hook_text=hook_text, subtitles_required=subtitles_required,
+                                voiceover=voiceover, prepared=True)
+        output.update(start_seconds=start, highlight_analysis=analysis, selection_mode="rhythmic_four_shots")
+        return output
     selection = "sampled_audio_visual_chat" if start or duration < info["duration"] else "entire_video"
     destination.parent.mkdir(parents=True, exist_ok=True)
     ass_file = destination.with_suffix(".ass")

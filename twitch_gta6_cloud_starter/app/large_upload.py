@@ -34,6 +34,7 @@ class StartUpload(BaseModel):
     auto_subtitles: bool | None = None
     music_enabled: bool = True
     vision_enabled: bool = False
+    rhythmic: bool = False
     voiceover: bool = False
     clip_count: int = Field(default=1, ge=1, le=3)
     face_bottom_left: bool = False
@@ -143,6 +144,7 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
             "vision_enabled": data.vision_enabled,
             "clip_count": data.clip_count,
             "face_bottom_left": data.face_bottom_left,
+            "rhythmic": data.rhythmic,
             "voiceover": data.voiceover,
             "hook_text": data.hook_text,
             "caption_text": data.caption_text,
@@ -262,6 +264,7 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             "vision_enabled": meta.get("vision_enabled", False),
             "clip_count": meta.get("clip_count", 1),
             "face_bottom_left": meta.get("face_bottom_left", False),
+            "rhythmic": meta.get("rhythmic", False),
             "voiceover": meta.get("voiceover", False),
             "music_original_generated": meta["music_enabled"],
             "hook_text": meta["hook_text"],
@@ -362,11 +365,16 @@ summary{cursor:pointer;color:#c8d7fa;font-weight:650}
 progress{margin-top:18px;width:100%;height:20px}
 #status{white-space:pre-line;margin-top:18px;padding:12px;background:#0c1420;border-radius:9px}
 .muted{font-size:13px;color:#a7b6c9}.ok{color:#8ce9ae}.err{color:#ff9a9a}
-</style>
+body{background:#111411;color:#f5f6ee;padding:0}header,main{max-width:1080px;margin:auto}header{display:flex;justify-content:space-between;align-items:center;padding:24px 20px;border-bottom:1px solid #41463e}header b{letter-spacing:.14em}header em{color:#c3fa60}header a{color:#dce3d5;font-size:14px}
+main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6vw,68px)/1.03 system-ui;letter-spacing:-.065em}main>p{max-width:600px}h2{font-size:20px;margin:0 0 16px}.workspace{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:24px 0 18px}.card{background:#1d211e;border:1px solid #3b413a;padding:22px;border-radius:14px;min-width:0}
+.drop{padding:24px;border:1px dashed #84966e;border-radius:10px;background:#262d24;cursor:pointer}.drop small{display:block;color:#c2ccbb;margin-top:6px}#preview{width:100%;max-height:260px;margin-top:12px;background:#090b09;border-radius:8px}button,.download{background:#c3fa60;color:#151a10}.secondary{color:white}input[type=checkbox],progress{accent-color:#c3fa60}input[type=text],input[type=password],input[type=number],input[type=file],select{background:#141814;border-color:#51584c}#send{width:100%}a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #c3fa60}@media(max-width:760px){.workspace{grid-template-columns:1fr}.controls input{min-width:140px}main{padding:24px 12px}.card{padding:16px}}
+#editedPreview{display:block;max-width:100%;height:min(62vh,540px);margin:18px auto;background:#0b0e0b;border-radius:12px} input::file-selector-button{background:#30392c;border:0;border-radius:6px;padding:8px;color:#e9f1e1;margin-right:10px}</style>
 </head>
-<body><main>
-<h1>GTA VI — Montage automatique</h1>
-<p>Envoie une vidéo autorisée (jusqu'à 300 Mo, même si elle dure plus de 15 minutes) ; le serveur la reçoit en morceaux, sélectionne un extrait, ajoute sous-titres anglais et musique, puis génère un MP4 de 65 secondes et un ZIP prêt à publier.</p><p class="muted">La sélection combine les variations sonores, les changements d’image et les pics du chat fourni. Les longues vidéos sont échantillonnées sur toute leur durée.</p>
+<body><header><b>REPLAY <em>/</em> STUDIO</b><a href="/api/docs">Documentation API ↗</a></header><main>
+<h1>Studio de montage</h1><p>Transforme ton stream en clips verticaux. Importe une vidéo, choisis ton montage et récupère les MP4.</p>
+<div class="workspace"><section class="card"><h2>Vidéo source</h2>
+<label for="video" class="drop">Choisir une vidéo <small>MP4, MOV ou MKV · 300 Mo maximum</small></label><input id="video" type="file" accept=".mp4,.mov,.mkv,video/*">
+<video id="preview" controls playsinline hidden></video>
 <label for="token">X-Admin-Token (depuis Render → Environment → POLL_ADMIN_TOKEN)</label>
 <div class="controls">
 <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Jeton privé, jamais sauvegardé">
@@ -374,19 +382,20 @@ progress{margin-top:18px;width:100%;height:20px}
 <button class="secondary" id="copyToken" type="button">Copier le token saisi</button>
 </div>
 <p class="muted">Le token est uniquement celui que tu colles ici. Le serveur ne révèle jamais POLL_ADMIN_TOKEN. Évite de partager ton presse-papiers.</p>
-<label for="video">Vidéo source (MP4, MOV ou MKV)</label><input id="video" type="file" accept=".mp4,.mov,.mkv,video/*">
-<label for="chat">Chat horodaté (JSON facultatif)</label><input id="chat" type="file" accept=".json,application/json">
+</section><section class="card"><h2>Montage</h2>
+<label><input id="rhythmic" type="checkbox" checked> Montage rythmé en quatre plans</label>
+<details><summary>Ajouter les données du chat</summary><label for="chat">Chat horodaté (JSON facultatif)</label><input id="chat" type="file" accept=".json,application/json">
 <p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
-<label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
-<label><input id="faceLeft" type="checkbox"> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
-<label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="65">
+</details><label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
+<label><input id="faceLeft" type="checkbox" checked> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
+<label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="22">
 <label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
 <label><input id="voiceover" type="checkbox" checked> Lire l’accroche en voix off anglaise</label>
 <label for="subtitles">Sous-titres anglais</label>
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
 <label><input id="vision" type="checkbox"> Faire comparer les images des moments candidats par OpenAI</label>
 <label><input id="music" type="checkbox" checked> Ajouter une musique originale discrète</label>
-<label><input id="rights" type="checkbox"> Je possède les droits ou l'autorisation de réutiliser cette vidéo</label>
+</section></div><section class="card"><h2>Export</h2><label><input id="rights" type="checkbox"> Je possède les droits ou l'autorisation de réutiliser cette vidéo</label>
 <button id="send">Tout exécuter : importer → monter → télécharger</button>
 <progress id="progress" max="100" value="0" hidden></progress>
 <div id="status" role="status" aria-live="polite">Aucune vidéo envoyée.</div>
@@ -408,11 +417,19 @@ progress{margin-top:18px;width:100%;height:20px}
 </details>
 <div id="result"></div>
 <p class="muted">Aucun mot de passe n'est enregistré dans le navigateur. Les vidéos de test ne sont pas publiées automatiquement. Les fichiers terminés sont temporaires (48 h par défaut).</p>
-</main>
+</section></main>
 <script>
 (function(){
  const el=id=>document.getElementById(id);
  const send=el('send'), status=el('status'), result=el('result'), progress=el('progress');
+ let previewURL;
+ el('video').addEventListener('change',()=>{
+   if(previewURL)URL.revokeObjectURL(previewURL);
+   const file=el('video').files[0], preview=el('preview');
+   preview.hidden=!file;
+   if(file){previewURL=URL.createObjectURL(file);preview.src=previewURL}
+ });
+ let outputURL;
  const jobField=el('jobId'), jobPanel=el('jobPanel');
  function show(message,error){status.textContent=message;status.className=error?'err':'ok'}
  function showJob(job){
@@ -511,9 +528,19 @@ progress{margin-top:18px;width:100%;height:20px}
            const response=await fetch('/video/jobs/'+job+(batch?'/export':'/download'),{headers:{'X-Admin-Token':el('token').value.trim()}});
            if(!response.ok)throw Error('Téléchargement MP4 — HTTP '+response.status);
            const url=URL.createObjectURL(await response.blob());
+           if(!batch){
+             if(outputURL)URL.revokeObjectURL(outputURL);
+             outputURL=url;
+             let player=el('editedPreview');
+             if(!player){
+               player=document.createElement('video');player.id='editedPreview';player.controls=true;player.playsInline=true;
+               player.setAttribute('aria-label','Aperçu du clip monté');result.prepend(player);
+             }
+             player.src=url;
+           }
            const link=document.createElement('a');
            link.href=url;link.download='gta6-highlight-'+job.slice(0,8)+(batch?'.zip':'.mp4');link.click();
-           setTimeout(()=>URL.revokeObjectURL(url),60000);
+           if(batch)setTimeout(()=>URL.revokeObjectURL(url),60000);
          }catch(error){show(error.message,true)}
          finally{download.disabled=false}
        };
@@ -615,7 +642,7 @@ progress{margin-top:18px;width:100%;height:20px}
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
        clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
-       hook_text:el('hook').value,vision_enabled:el('vision').checked,voiceover:el('voiceover').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
+       hook_text:el('hook').value,vision_enabled:el('vision').checked,rhythmic:el('rhythmic').checked,voiceover:el('voiceover').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
      const chatFile=el('chat').files[0];

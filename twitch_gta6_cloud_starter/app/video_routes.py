@@ -107,6 +107,7 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
                                     subtitles_required=status.get("subtitles_required", False),
                                     chat_seconds=chat_seconds,
                                     section=(index, count),
+                                    rhythmic=status.get("rhythmic", False),
                                     face_bottom_left=status.get("face_bottom_left", False),
                                     voiceover=status.get("voiceover", False),
                                     vision_enabled=status.get("vision_enabled", False))

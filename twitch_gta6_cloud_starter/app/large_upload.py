@@ -345,7 +345,7 @@ progress{margin-top:18px;width:100%;height:20px}
 </head>
 <body><main>
 <h1>GTA VI — Montage automatique</h1>
-<p>Envoie une vidéo autorisée (jusqu'à 300 Mo) ; le serveur la reçoit en morceaux, sélectionne un extrait, ajoute sous-titres anglais et musique, puis génère un MP4 de 65 secondes et un ZIP prêt à publier.</p>
+<p>Envoie une vidéo autorisée (jusqu'à 300 Mo, même si elle dure plus de 15 minutes) ; le serveur la reçoit en morceaux, sélectionne un extrait, ajoute sous-titres anglais et musique, puis génère un MP4 de 65 secondes et un ZIP prêt à publier.</p><p class="muted">La sélection automatique actuelle analyse surtout les 3 premières minutes, et non toutes les heures d'un long stream.</p>
 <label for="token">X-Admin-Token (depuis Render → Environment → POLL_ADMIN_TOKEN)</label>
 <div class="controls">
 <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Jeton privé, jamais sauvegardé">
@@ -466,7 +466,38 @@ progress{margin-top:18px;width:100%;height:20px}
        result.replaceChildren(a);
        return;
      }
-     if(state.state==='failed')throw Error('Le montage a échoué ('+(state.error||'erreur serveur')+'). Job : '+job);
+     if(state.state==='failed'){
+       if(state.source_retained_for_retry){
+         result.replaceChildren();
+         const retry=document.createElement('button');
+         retry.textContent='Relancer le montage sans renvoyer la vidéo';
+         retry.className='secondary';
+         retry.addEventListener('click',async()=>{
+           retry.disabled=true;
+           try{
+             await api('/video/jobs/'+job+'/retry',{method:'POST'});
+             result.replaceChildren();
+             await monitor(job);
+           }catch(e){show('Erreur : '+e.message,true);retry.disabled=false}
+         });
+         const noSpeech=document.createElement('button');
+         noSpeech.textContent='Relancer sans transcription';
+         noSpeech.className='secondary';
+         noSpeech.style.marginLeft='9px';
+         noSpeech.addEventListener('click',async()=>{
+           noSpeech.disabled=true;
+           try{
+             await api('/video/jobs/'+job+'/retry',{method:'POST',
+               headers:{'Content-Type':'application/x-www-form-urlencoded'},
+               body:'auto_subtitles=false'});
+             result.replaceChildren();
+             await monitor(job);
+           }catch(e){show('Erreur : '+e.message,true);noSpeech.disabled=false}
+         });
+         result.append(retry,noSpeech);
+       }
+       throw Error('Le montage a échoué ('+(state.error||'erreur serveur')+'). Job : '+job);
+     }
      await new Promise(resolve=>setTimeout(resolve,6000));
    }
    show('Montage encore en cours. Note ton job_id pour vérifier son statut : '+job);

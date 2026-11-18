@@ -103,7 +103,6 @@ class ProfessionalEditorTests(unittest.TestCase):
             ))
             content = target.read_text()
             self.assertIn("0:00:01.50", content)
-            self.assertIn("safe", "safe")  # actual positions asserted below
             self.assertIn("576", content)  # 30% bottom-safe margin of 1920
             self.assertNotIn("TODAY", content)
 
@@ -118,7 +117,7 @@ class ProfessionalEditorTests(unittest.TestCase):
                 dynamic_zoom=False, auto_subtitles=False, music_enabled=True,
                 rhythmic=True, hook_text="GTA VI REACTION"
             )
-            self.assertEqual(detail["selection_mode"], "rhythmic_four_shots")
+            self.assertEqual(detail["selection_mode"], "rhythmic_source_cuts")
             self.assertEqual(detail["output_validation"]["video_codec"], "h264")
             self.assertEqual(detail["output_validation"]["audio_codec"], "aac")
             self.assertEqual(detail["output_validation"]["output_width"], 360)

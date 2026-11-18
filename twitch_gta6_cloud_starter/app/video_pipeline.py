@@ -99,10 +99,10 @@ def _ass_time(seconds):
     return f"{hours}:{minutes:02}:{secs:02}.{cs:02}"
 
 
-def make_ass(caption_text, duration, destination, width=720, height=1280):
+def make_ass(caption_text, duration, destination, width=720, height=1280, timed_words=None):
     """English-colored subtitles with approximate timing for supplied text."""
     words = re.findall(r"\S+", caption_text or "")[:160]
-    if not words:
+    if not words and not timed_words:
         return False
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -116,6 +116,34 @@ Style: Hype,DejaVu Sans,54,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+    if timed_words:
+        # Each event starts/ends at the ASR word boundaries. Show 3-word
+        # context and highlight the currently spoken English word.
+        validated = []
+        for entry in timed_words[:600]:
+            try:
+                begin = max(0.0, float(entry["start"]))
+                finish = min(float(duration), float(entry["end"]))
+                token = _ass_escape(str(entry["word"]).upper())
+            except (KeyError, ValueError, TypeError):
+                continue
+            if token and finish > begin + 0.04:
+                validated.append((begin, finish, token))
+        lines = []
+        for i, (begin, finish, _) in enumerate(validated):
+            group_start = (i // 3) * 3
+            group = validated[group_start:group_start + 3]
+            text_parts = []
+            for j, (_, _, token) in enumerate(group):
+                if j + group_start == i:
+                    text_parts.append(r"{\c&H0000EFFF&}" + token + r"{\c&H00FFFFFF&}")
+                else:
+                    text_parts.append(token)
+            lines.append(
+                f"Dialogue: 0,{_ass_time(begin)},{_ass_time(finish)},Hype,,0,0,0,,{' '.join(text_parts)}"
+            )
+        destination.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+        return bool(lines)
     chunks = [words[i:i + 3] for i in range(0, len(words), 3)]
     allotted = max(0.4, duration - 0.2)
     max_cards = max(1, int(allotted / 0.45))
@@ -140,7 +168,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
-               dynamic_zoom=True):
+               dynamic_zoom=True, auto_subtitles=False):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
@@ -160,7 +188,19 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     start, selection = pick_highlight_start(source, info["duration"], duration)
     destination.parent.mkdir(parents=True, exist_ok=True)
     ass_file = destination.with_suffix(".ass")
-    has_captions = make_ass(caption_text, duration, ass_file, width, height)
+    subtitle_mode, detected_language = "none", None
+    if auto_subtitles:
+        # No external transcription is attempted unless explicitly requested.
+        from .captions import transcribe_english
+        subtitle_words, subtitle_mode, detected_language = transcribe_english(
+            source, start=start, duration=duration, scratch_dir=destination.parent,
+        )
+        has_captions = make_ass("", duration, ass_file, width, height, timed_words=subtitle_words)
+        if not has_captions:
+            raise VideoPipelineError("No aligned captions could be produced")
+    else:
+        has_captions = make_ass(caption_text, duration, ass_file, width, height)
+        subtitle_mode = "approximate_supplied_text" if has_captions else "none"
     filters = [
         "fps=24",
         f"scale={width}:{height}:force_original_aspect_ratio=increase",
@@ -196,7 +236,8 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "duration_seconds": round(output_info["duration"], 2),
             "start_seconds": start, "selection_mode": selection,
             "width": width, "height": height, "fps": 24,
-            "caption_mode": "approximate_supplied_text" if has_captions else "none",
+            "caption_mode": subtitle_mode,
+            "detected_language": detected_language,
             "dynamic_zoom": dynamic_zoom,
             "minute_plus": output_info["duration"] > 60.0,
         }

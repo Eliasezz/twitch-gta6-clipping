@@ -16,7 +16,7 @@ from .video_pipeline import VideoPipelineError, render_mp4, probe
 from .publishing import publication_package, sign_share_link, verify_share_link
 from .video_exports import export_bundle, ExportError
 import hashlib
-from .captions import openai_auth_status
+from .captions import CaptionError, openai_auth_status
 
 router = APIRouter(prefix="/video", tags=["video-workflow"])
 VIDEO_DIR = Path(os.getenv("VIDEO_STORAGE_DIR", "/data/videos"))
@@ -94,10 +94,31 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_sub
             source = folder / "source.mp4"
             output = folder / "vertical.mp4"
             probe(source)
-            result = render_mp4(source, output, caption_text=caption_text,
-                                clip_seconds=clip_seconds, width=width, height=height,
-                                auto_subtitles=auto_subtitles, music_enabled=music_enabled,
-                                hook_text=hook_text)
+            try:
+                result = render_mp4(
+                    source, output, caption_text=caption_text,
+                    clip_seconds=clip_seconds, width=width, height=height,
+                    auto_subtitles=auto_subtitles, music_enabled=music_enabled,
+                    hook_text=hook_text,
+                )
+            except CaptionError as speech_error:
+                # API quota/rate limits should not discard a large uploaded
+                # video. Produce an MP4 without inventing spoken captions.
+                description = str(speech_error).lower()
+                if not auto_subtitles or not (
+                    "quota" in description or "rate limit" in description
+                ):
+                    raise
+                status["subtitles_pending"] = True
+                status["caption_fallback_attempted"] = True
+                status["caption_fallback_reason"] = "openai_quota_or_rate_limit"
+                _write_status(folder, status)
+                print("Video captions quota fallback:", job_id)
+                result = render_mp4(
+                    source, output, caption_text="", clip_seconds=clip_seconds,
+                    width=width, height=height, auto_subtitles=False,
+                    music_enabled=music_enabled, hook_text=hook_text,
+                )
             status.update({
                 "state": "done", "result": result,
                 "publication_status": (

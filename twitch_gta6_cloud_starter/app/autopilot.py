@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from . import metricool_api, twitch_media
+from .captions import openai_auth_status
 from .video_pipeline import probe
 
 router = APIRouter(prefix="/automation", tags=["automatic-workflow"])
@@ -36,7 +37,7 @@ def readiness():
         "authorized_creator_ids_present": bool(allow),
         "twitch_editor_id_present": bool(os.getenv("TWITCH_EDITOR_ID", "").strip()),
         "twitch_editor_oauth_present": bool(os.getenv("TWITCH_EDITOR_ACCESS_TOKEN", "").strip()),
-        "speech_api_key_present": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "speech_auth_configured": openai_auth_status()["configured"],
         "metricool_api_token_present": metricool_api.configured(),
         "metricool_autopublish_enabled": settings["enabled"],
     }
@@ -44,6 +45,7 @@ def readiness():
         "ready_for_automatic_publishing": all(needs.values()),
         "checks": needs,
         "creator_count": len(allow),
+        "speech_authentication_method": openai_auth_status()["method"],
         "max_posts_per_day": max(1, min(3, int(os.getenv("AUTO_POSTS_PER_DAY", "1")))),
         "metricool_brand": "ACTU GTA VI",
         "networks": ["tiktok", "youtube"],

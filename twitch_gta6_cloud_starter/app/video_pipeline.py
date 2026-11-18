@@ -5,6 +5,7 @@ Supplied plain-text captions have approximate timing, not speech recognition.
 """
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -47,7 +48,8 @@ def probe(path):
         raise VideoPipelineError("Input is not a playable video") from exc
     if not math.isfinite(duration) or duration <= 0 or width < 16 or height < 16:
         raise VideoPipelineError("Invalid video duration or dimensions")
-    return {"duration": duration, "width": width, "height": height}
+    has_audio = any(x.get("codec_type") == "audio" for x in payload["streams"])
+    return {"duration": duration, "width": width, "height": height, "has_audio": has_audio}
 
 
 def pick_highlight_start(path, duration, clip_seconds):
@@ -99,10 +101,11 @@ def _ass_time(seconds):
     return f"{hours}:{minutes:02}:{secs:02}.{cs:02}"
 
 
-def make_ass(caption_text, duration, destination, width=720, height=1280, timed_words=None):
+def make_ass(caption_text, duration, destination, width=720, height=1280,
+             timed_words=None, hook_text=""):
     """English-colored subtitles with approximate timing for supplied text."""
     words = re.findall(r"\S+", caption_text or "")[:160]
-    if not words and not timed_words:
+    if not words and not timed_words and not hook_text:
         return False
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -113,9 +116,17 @@ WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Hype,DejaVu Sans,54,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,2,35,35,220,1
+Style: Hook,DejaVu Sans,44,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,8,45,45,140,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+    extras = []
+    if hook_text:
+        hook = _ass_escape(str(hook_text).upper())[:80]
+        if hook:
+            extras.append(
+                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 3.2))},Hook,,0,0,0,,{hook}"
+            )
     if timed_words:
         # Each event starts/ends at the ASR word boundaries. Show 3-word
         # context and highlight the currently spoken English word.
@@ -142,8 +153,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             lines.append(
                 f"Dialogue: 0,{_ass_time(begin)},{_ass_time(finish)},Hype,,0,0,0,,{' '.join(text_parts)}"
             )
-        destination.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
-        return bool(lines)
+        destination.write_text(header + "\n".join(extras + lines) + "\n", encoding="utf-8")
+        return bool(extras or lines)
     chunks = [words[i:i + 3] for i in range(0, len(words), 3)]
     allotted = max(0.4, duration - 0.2)
     max_cards = max(1, int(allotted / 0.45))
@@ -163,12 +174,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             else:
                 rendered.append(clean)
         lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Hype,,0,0,0,,{' '.join(rendered)}")
-    destination.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
-    return bool(lines)
+    destination.write_text(header + "\n".join(extras + lines) + "\n", encoding="utf-8")
+    return bool(extras or lines)
 
 
 def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
-               dynamic_zoom=True, auto_subtitles=False):
+               dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text=""):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
@@ -209,12 +220,13 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             reaction_score = speech_rank.get("reaction_score")
         aligned_words = window_words(transcript_words, start, duration)
         has_captions = make_ass(
-            "", duration, ass_file, width, height, timed_words=aligned_words,
+            "", duration, ass_file, width, height, timed_words=aligned_words, hook_text=hook_text,
         )
         if not has_captions:
             raise VideoPipelineError("No aligned captions in selected highlight")
     else:
-        has_captions = make_ass(caption_text, duration, ass_file, width, height)
+        has_captions = make_ass(caption_text, duration, ass_file, width, height,
+                                hook_text=hook_text)
         subtitle_mode = "approximate_supplied_text" if has_captions else "none"
     filters = [
         "fps=24",
@@ -229,14 +241,36 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         )
     if has_captions:
         filters.append(f"ass={ass_file.as_posix()}")
+    bed_path = destination.with_suffix(".original-bed.wav")
+    if music_enabled:
+        from .music import make_original_beat
+        make_original_beat(bed_path)
     command = [
         _check_binary("ffmpeg"), "-hide_banner", "-nostdin", "-y",
-        "-ss", str(start), "-i", str(source), "-t", str(duration),
-        "-map", "0:v:0", "-map", "0:a:0?", "-vf", ",".join(filters),
+        "-ss", str(start), "-i", str(source),
+    ]
+    if music_enabled:
+        command.extend(["-stream_loop", "-1", "-i", str(bed_path)])
+    command.extend(["-t", str(duration), "-map", "0:v:0"])
+    if music_enabled:
+        if info["has_audio"]:
+            # Keep the original voice foreground; softly mix original instrumental.
+            command.extend([
+                "-filter_complex",
+                "[0:a:0]volume=1.0[voice];[1:a:0]volume=0.19[bed];"
+                "[voice][bed]amix=inputs=2:duration=first:normalize=0[aout]",
+                "-map", "[aout]",
+            ])
+        else:
+            command.extend(["-map", "1:a:0"])
+    else:
+        command.extend(["-map", "0:a:0?"])
+    command.extend([
+        "-vf", ",".join(filters),
         "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast", "-crf", "25",
         "-pix_fmt", "yuv420p", "-r", "24", "-c:a", "aac", "-b:a", "96k",
-        "-movflags", "+faststart", "-shortest", str(destination)
-    ]
+        "-movflags", "+faststart", "-shortest", str(destination),
+    ])
     try:
         _execute(command, timeout=720 if duration >= 45 else 270)
         output_info = probe(destination)
@@ -254,8 +288,11 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "caption_mode": subtitle_mode,
             "detected_language": detected_language,
             "reaction_keyword_score": reaction_score,
+            "original_music_mixed": bool(music_enabled),
+            "hook_text": hook_text[:80],
             "dynamic_zoom": dynamic_zoom,
             "minute_plus": output_info["duration"] > 60.0,
         }
     finally:
         ass_file.unlink(missing_ok=True)
+        bed_path.unlink(missing_ok=True)

@@ -189,15 +189,30 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     destination.parent.mkdir(parents=True, exist_ok=True)
     ass_file = destination.with_suffix(".ass")
     subtitle_mode, detected_language = "none", None
+    reaction_score = None
     if auto_subtitles:
-        # No external transcription is attempted unless explicitly requested.
+        # One transcription of the first 180 seconds supplies both ranking
+        # and clip-relative captions. This may incur API charges when enabled.
         from .captions import transcribe_english
-        subtitle_words, subtitle_mode, detected_language = transcribe_english(
-            source, start=start, duration=duration, scratch_dir=destination.parent,
+        from .highlight import choose_speech_window, window_words
+        analysis_duration = min(info["duration"], max(180.0, duration))
+        transcript_words, subtitle_mode, detected_language = transcribe_english(
+            source, start=0.0, duration=analysis_duration,
+            scratch_dir=destination.parent,
         )
-        has_captions = make_ass("", duration, ass_file, width, height, timed_words=subtitle_words)
+        new_start, speech_rank = choose_speech_window(
+            transcript_words, analysis_duration, duration,
+        )
+        if new_start is not None:
+            start = new_start
+            selection = speech_rank["method"]
+            reaction_score = speech_rank.get("reaction_score")
+        aligned_words = window_words(transcript_words, start, duration)
+        has_captions = make_ass(
+            "", duration, ass_file, width, height, timed_words=aligned_words,
+        )
         if not has_captions:
-            raise VideoPipelineError("No aligned captions could be produced")
+            raise VideoPipelineError("No aligned captions in selected highlight")
     else:
         has_captions = make_ass(caption_text, duration, ass_file, width, height)
         subtitle_mode = "approximate_supplied_text" if has_captions else "none"
@@ -238,6 +253,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "width": width, "height": height, "fps": 24,
             "caption_mode": subtitle_mode,
             "detected_language": detected_language,
+            "reaction_keyword_score": reaction_score,
             "dynamic_zoom": dynamic_zoom,
             "minute_plus": output_info["duration"] > 60.0,
         }

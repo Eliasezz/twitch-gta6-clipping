@@ -34,6 +34,7 @@ class StartUpload(BaseModel):
     auto_subtitles: bool | None = None
     music_enabled: bool = True
     vision_enabled: bool = False
+    voiceover: bool = False
     hook_text: str = Field(default="GTA VI | BIG REACTION", max_length=80)
     caption_text: str = Field(default="", max_length=5000)
     chat_seconds: list[Annotated[float, Field(ge=0, le=MAX_SOURCE_SECONDS, allow_inf_nan=False)]] = Field(default_factory=list, max_length=25000)
@@ -138,6 +139,7 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
             "auto_subtitles": bool(auto_subtitles),
             "music_enabled": bool(data.music_enabled),
             "vision_enabled": data.vision_enabled,
+            "voiceover": data.voiceover,
             "hook_text": data.hook_text,
             "caption_text": data.caption_text,
             "chat_seconds": data.chat_seconds,
@@ -252,6 +254,7 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             "auto_subtitles_requested": meta["auto_subtitles"],
             "subtitles_required": meta.get("subtitles_required", False),
             "vision_enabled": meta.get("vision_enabled", False),
+            "voiceover": meta.get("voiceover", False),
             "music_original_generated": meta["music_enabled"],
             "hook_text": meta["hook_text"],
             "publication_status": "not_ready",
@@ -368,6 +371,7 @@ progress{margin-top:18px;width:100%;height:20px}
 <p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
 <label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="65">
 <label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
+<label><input id="voiceover" type="checkbox" checked> Lire l’accroche en voix off anglaise</label>
 <label for="subtitles">Sous-titres anglais</label>
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
 <label><input id="vision" type="checkbox"> Faire comparer les images des moments candidats par OpenAI</label>
@@ -484,6 +488,7 @@ progress{margin-top:18px;width:100%;height:20px}
        }
        if(analysis?.vision)summary.push('Analyse des images : '+analysis.vision.reason);
        if(analysis?.vision_warning)summary.push(analysis.vision_warning);
+       if(state.result.voiceover_warning)summary.push(state.result.voiceover_warning);
        if(state.result.caption_warning)summary.push('Sous-titres indisponibles — '+state.result.caption_warning);
        show('Job : '+job+'\nMontage terminé.\n'+summary.join('\n'));
        const download=document.createElement('button');
@@ -502,6 +507,7 @@ progress{margin-top:18px;width:100%;height:20px}
          finally{download.disabled=false}
        };
        result.replaceChildren(download);
+       download.click();
        try{
          const link=await api('/video/jobs/'+job+'/export-link',{method:'POST'});
          const a=document.createElement('a');
@@ -554,6 +560,7 @@ progress{margin-top:18px;width:100%;height:20px}
  const providedJob=new URLSearchParams(window.location.search).get('job_id');
  if(providedJob && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(providedJob)){
    el('existingJob').value=providedJob;
+   el('existingJob').closest('details').open=true;
    showJob(providedJob);
    show('Import retrouvé : colle ton token puis clique sur Vérifier ce job_id.');
  }
@@ -597,7 +604,7 @@ progress{margin-top:18px;width:100%;height:20px}
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
        clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
-       hook_text:el('hook').value,vision_enabled:el('vision').checked
+       hook_text:el('hook').value,vision_enabled:el('vision').checked,voiceover:el('voiceover').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
      const chatFile=el('chat').files[0];

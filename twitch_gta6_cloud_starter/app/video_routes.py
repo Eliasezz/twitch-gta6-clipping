@@ -101,6 +101,7 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
                                 hook_text=hook_text,
                                 subtitles_required=status.get("subtitles_required", False),
                                 chat_seconds=chat_seconds,
+                                voiceover=status.get("voiceover", False),
                                 vision_enabled=status.get("vision_enabled", False))
             status.update({"state": "done", "result": result,
                            "publication_status": "review_required",

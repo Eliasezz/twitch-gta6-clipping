@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -157,7 +158,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=720, height=1280,
                dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text="",
-               subtitles_required=False, chat_seconds=(), vision_enabled=False):
+               subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False):
     source, destination = Path(source), Path(destination)
     if not source.is_file():
         raise VideoPipelineError("Source video not found")
@@ -234,20 +235,34 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     ]
     if music_enabled:
         command.extend(["-stream_loop", "-1", "-i", str(bed_path)])
+    narration = destination.with_suffix(".voice.wav")
+    voice_ready = False
+    if voiceover and hook_text.strip():
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                Path(directory, "intro.txt").write_text(hook_text[:80], encoding="utf-8")
+                subprocess.run([
+                    _check_binary("ffmpeg"), "-v", "error", "-y", "-f", "lavfi",
+                    "-i", "flite=textfile=intro.txt:voice=slt", "-t", str(duration),
+                    str(narration.resolve()),
+                ], cwd=directory, capture_output=True, check=True, timeout=20)
+            voice_ready = True
+        except (OSError, subprocess.SubprocessError):
+            narration.unlink(missing_ok=True)
+    if voice_ready:
+        command.extend(["-i", str(narration)])
     command.extend(["-t", str(duration), "-map", "0:v:0"])
+    tracks = []
+    if info["has_audio"]:
+        tracks.append("[0:a:0]volume=0.85[src]")
     if music_enabled:
-        if info["has_audio"]:
-            # Keep the original voice foreground; softly mix original instrumental.
-            command.extend([
-                "-filter_complex",
-                "[0:a:0]volume=1.0[voice];[1:a:0]volume=0.19[bed];"
-                "[voice][bed]amix=inputs=2:duration=first:normalize=0[aout]",
-                "-map", "[aout]",
-            ])
-        else:
-            command.extend(["-map", "1:a:0"])
-    else:
-        command.extend(["-map", "0:a:0?"])
+        tracks.append("[1:a:0]volume=0.19[bed]")
+    if voice_ready:
+        tracks.append(f"[{2 if music_enabled else 1}:a:0]volume=1.4[narr]")
+    if tracks:
+        labels = "".join(track[track.rindex("["):] for track in tracks)
+        mix = f"{labels}amix=inputs={len(tracks)}:duration=longest:normalize=0,alimiter=limit=0.95[aout]"
+        command.extend(["-filter_complex", ";".join(tracks + [mix]), "-map", "[aout]"])
     command.extend([
         "-vf", ",".join(filters),
         "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast", "-crf", "25",
@@ -275,6 +290,8 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             "caption_warning": caption_warning,
             "transcription_warning": transcription_warning,
             "speech_words_synchronized": subtitle_mode == "english_word_synced",
+            "voiceover_mixed": voice_ready,
+            "voiceover_warning": "Voix off indisponible." if voiceover and not voice_ready else None,
             "original_music_mixed": bool(music_enabled),
             "hook_text": hook_text[:80],
             "dynamic_zoom": dynamic_zoom,
@@ -282,4 +299,5 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         }
     finally:
         ass_file.unlink(missing_ok=True)
+        narration.unlink(missing_ok=True)
         bed_path.unlink(missing_ok=True)

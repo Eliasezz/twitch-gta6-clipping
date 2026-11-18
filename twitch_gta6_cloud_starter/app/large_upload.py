@@ -313,6 +313,62 @@ def recover_completed_uploads():
     return recovered
 
 
+def recover_failed_caption_uploads():
+    """Recover previously failed caption jobs without re-uploading the source.
+
+    Runs once at service startup for failed ASR jobs with retained source and
+    explicit rights confirmation. Leaves other failed jobs for manual review.
+    """
+    routes = _routes()
+    if not routes.VIDEO_DIR.is_dir():
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    jobs = []
+    for path in sorted(routes.VIDEO_DIR.glob("*/status.json")):
+        try:
+            job_id = path.parent.name
+            if str(uuid.UUID(job_id)) != job_id:
+                continue
+            status = routes._read_status(job_id)
+            created_at = datetime.fromisoformat(status["created_at"])
+            source = path.parent / "source.mp4"
+            if not (
+                status.get("state") == "failed"
+                and status.get("error") == "CaptionError"
+                and status.get("auto_subtitles_requested") is True
+                and status.get("authorized") is True
+                and not status.get("caption_fallback_attempted")
+                and created_at.tzinfo is not None
+                and created_at >= cutoff
+                and source.is_file()
+            ):
+                continue
+            status["state"] = "queued"
+            status["caption_fallback_attempted"] = True
+            status["subtitles_pending"] = True
+            status["caption_fallback_reason"] = "openai_transcription_unavailable"
+            status["auto_subtitles_requested"] = False
+            status["publication_status"] = "review_required_caption_fallback"
+            status.pop("error", None)
+            routes._write_status(path.parent, status)
+            threading.Thread(
+                target=routes._worker,
+                args=(job_id, "", int(status.get("requested_duration_seconds", 65))),
+                kwargs={
+                    "auto_subtitles": False,
+                    "music_enabled": bool(status.get("music_original_generated", True)),
+                    "hook_text": str(status.get("hook_text") or "GTA VI | BIG REACTION"),
+                },
+                name="caption-fallback-" + job_id[:8],
+                daemon=True,
+            ).start()
+            jobs.append(job_id)
+            print("Recovered video without OpenAI subtitles:", job_id)
+        except Exception as error:
+            print("Caption fallback recovery skipped:", path.parent.name, type(error).__name__)
+    return jobs
+
+
 UPLOADER_HTML = r"""<!doctype html>
 <html lang="fr">
 <head>
@@ -458,12 +514,36 @@ progress{margin-top:18px;width:100%;height:20px}
      show('Job : '+job+'\nStatut : '+state.state+'\n'+
        (state.result?('Durée : '+state.result.duration_seconds+' secondes\nSous-titres : '+state.result.caption_mode):''));
      if(state.state==='done'){
+       if(state.subtitles_pending){
+         show('MP4 terminé mais sous-titres manquants (quota OpenAI). Job : '+job+
+           '\\nTu peux télécharger le montage et réessayer les sous-titres après correction du quota.');
+       }
        const link=await api('/video/jobs/'+job+'/export-link',{method:'POST'});
        const a=document.createElement('a');
        a.href=link.url; a.target='_blank';a.rel='noopener noreferrer';
-       a.textContent='Télécharger le ZIP prêt à publier';
+       a.textContent=state.subtitles_pending
+         ? 'Télécharger le ZIP (sans sous-titres)' : 'Télécharger le ZIP prêt à publier';
        a.className='download';
        result.replaceChildren(a);
+       if(state.subtitles_pending && state.source_retained_for_retry){
+         const retry=document.createElement('button');
+         retry.textContent='Réessayer les sous-titres OpenAI';
+         retry.className='secondary';
+         retry.style.marginLeft='10px';
+         retry.addEventListener('click',async()=>{
+           retry.disabled=true;
+           try{
+             await api('/video/jobs/'+job+'/retry',{
+               method:'POST',
+               headers:{'Content-Type':'application/x-www-form-urlencoded'},
+               body:'auto_subtitles=true'
+             });
+             result.replaceChildren();
+             await monitor(job);
+           }catch(e){show('Erreur : '+e.message,true);retry.disabled=false}
+         });
+         result.appendChild(retry);
+       }
        return;
      }
      if(state.state==='failed'){

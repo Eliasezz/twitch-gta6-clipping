@@ -48,6 +48,7 @@ Twitch metadata access is not blanket permission to download/re-edit/repost ever
 - `DATABASE_PATH` — default `/data/clips.sqlite3`
 - `VIDEO_STORAGE_DIR` — private source/output files, default `/data/videos`
 - `VIDEO_MAX_UPLOAD_MB` — upload size limit, default 75 MB, cap 120 MB
+- `VIDEO_KEEP_HOURS` — completed job retention, default 48 hours; download the MP4 before it expires
 
 ## Local run
 ```bash
@@ -96,6 +97,7 @@ Endpoint `GET /video/ready` checks if FFmpeg is available and whether
 highlight window is an audio-activity heuristic, not a reliable AI emotional
 ranking. FFmpeg outputs a 720x1280, 24fps H.264 MP4. On the current small Render
 instance, lengthy media takes time and the disk is capped; use short source
-videos for the first test. The workflow processes only uploaded footage;
+videos for the first test. Old completed video jobs are removed after 48 hours
+by the next successful upload request. The workflow processes only uploaded footage;
 automatic downloads require separately authorized Twitch broadcaster/editor
 OAuth and appropriate licensing. Social publishing remains disabled.

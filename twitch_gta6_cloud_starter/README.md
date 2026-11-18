@@ -195,3 +195,72 @@ to its plugin connection or publishing tokens. We do not store those tokens.
 Videos of 65 seconds can meet a duration threshold, but a streamer's video
 with only cropping, zooms and captions can still fail originality or reuse
 policies. Creator permission and substantive original added value are critical.
+
+
+## Autonomous official Twitch -> edit -> TikTok + YouTube (opt-in)
+
+**Status:** the code is installed, but real automatic posting is gated by
+confirmed technical platform authorization and available source clips.
+Creator reuse permission by itself does not grant Twitch's API download
+scope. No scraping or fabricated Twitch download URLs are used.
+
+1. Complete **Twitch user OAuth** as an approved channel editor or
+   broadcaster with scope `editor:manage:clips` or `channel:manage:clips`.
+   Store the resulting user OAuth token as `TWITCH_EDITOR_ACCESS_TOKEN`
+   and its matching user ID as `TWITCH_EDITOR_ID`, in **Render Environment**.
+   App Client ID/Secret alone do not grant access.
+2. Set `ALLOWED_BROADCASTER_IDS` to the numeric Twitch creator IDs that
+   granted licensing permission. An empty list blocks all automatic edits.
+3. Set `OPENAI_API_KEY` in Render to permit paid transcription. It
+   generates English timed captions (translation of non-English speech
+   has approximate segment-based timing), while the speech keyword scoring
+   selects likely reactions.
+4. In **Metricool Settings > API**, obtain the account's API token (only
+   if the plan offers it), then set `METRICOOL_API_TOKEN` in Render.
+   The already linked account IDs are `METRICOOL_USER_ID=6375809` and
+   `METRICOOL_BLOG_ID=8109476`. You do not need to reconnect TikTok/YouTube
+   in ChatGPT; the cloud server still needs its independent API token.
+5. Set `AUTO_PIPELINE_ENABLED=1` and `METRICOOL_AUTO_PUBLISH=1`.
+   The background poller attempts one autonomous batch every 15 minutes,
+   with a default maximum of **one** finished batch per UTC day.
+
+### What the autonomous pipeline does
+
+- Discover clips for allowlisted Twitch creators, ordered by views.
+- Use the **official** Twitch `helix/clips/downloads` API with the editor
+  OAuth token, without guessing video CDN URLs.
+- Select **two to five clips of the same creator** with enough genuine
+  footage for 65 seconds; normalize/concatenate them into a source video.
+- Select a speech/reaction-rich window using ASR keyword heuristics.
+- Render **65-second 720×1280, 24fps MP4**, original synthesized electronic
+  backing music mixed quietly beneath the creator's voice, a brief on-screen
+  title hook, and timed colored English subtitle words.
+- Submit the MP4 for immediate normalization onto Metricool hosting using
+  an unlisted, high-entropy media-transfer URL; revoke it after import.
+- Schedule the same licensed edit to both TikTok and YouTube via Metricool.
+  Each platform's account rules and the Metricool API plan apply.
+- Keep a SQLite table of used clip IDs, so automatic polls do not
+  repost the same source clips. No more than one batch/day by default.
+
+### Safety, monitoring, and costs
+
+Check `GET /automation/status` for **boolean configuration readiness**;
+it never exposes secrets. `POST /automation/run` can manually trigger
+a pass with the existing `X-Admin-Token`. Missing OAuth or API credentials
+returns an explicit blocker instead of submitting any post.
+
+Metricool API requires an eligible paid plan. The server must host video
+long enough for Metricool's normalize endpoint to ingest it; if Metricool
+does not return an independent video URL, scheduling fails closed. Actual
+publication is **not guaranteed** by a successful scheduler response;
+check the Metricool planner and platform status. Do not enable unattended
+posting until the official OAuth, media normalization, and a complete
+real-video posting test have been confirmed. Automatic music is an
+**original synth instrumental** rather than a copyrighted trending song;
+trend music licensing cannot be assumed. Remixing other creators' clips
+may also be ineligible for monetization under originality rules.
+
+For a manual permitted upload via `POST /video/jobs`, new form fields
+`music_enabled=true` and `hook_text=GTA VI | BIG REACTION` are
+available. The existing `POST /video/demo` remains synthetic and must
+not be scheduled.

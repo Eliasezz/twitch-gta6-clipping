@@ -1,0 +1,56 @@
+name: Inspect live captions and publication workflow
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/inspect-captions-production.yml"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read production API and validate workflow routes
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+          host = "https://twitch-gta6-clipping.onrender.com"
+          latest = None
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(host + "/video/ready", timeout=20) as r:
+                      ready = json.load(r)
+                  with urllib.request.urlopen(host + "/openapi.json", timeout=20) as r:
+                      schema = json.load(r)
+                  with urllib.request.urlopen(host + "/health", timeout=20) as r:
+                      health = json.load(r)
+                  checks = {
+                      "render_alive": health.get("ok") is True,
+                      "ffmpeg_available": ready.get("available") is True,
+                      "admin_protection_configured": ready.get("configured_for_private_jobs") is True,
+                      "asr_opt_in_present": ready.get("transcription_requires_api_key") is True,
+                      "metricool_review_handoff_present": ready.get("media_handoff") == "review_required_before_signed_metricool_link",
+                      "demo_endpoint": "/video/demo" in schema.get("paths", {}),
+                      "media_approval_endpoint": "/video/jobs/{job_id}/approve" in schema.get("paths", {}),
+                      "publication_draft_endpoint": "/video/jobs/{job_id}/publication" in schema.get("paths", {}),
+                      "signed_media_endpoint": "/video/shared/{job_id}" in schema.get("paths", {}),
+                      "private_uploaded_video": "/video/jobs" in schema.get("paths", {}),
+                  }
+                  print(json.dumps({
+                      "checks": checks,
+                      "auto_asr_configured": ready.get("auto_speech_transcription"),
+                      "existing_selftest": ready.get("production_selftest", {}).get("state"),
+                      "existing_test_duration": ready.get("production_selftest", {}).get("duration_seconds"),
+                  }), flush=True)
+                  if all(checks.values()):
+                      print("SUCCESS: current production API has all new integration routes", flush=True)
+                      break
+                  latest = checks
+              except Exception as exc:
+                  latest = type(exc).__name__
+                  print("Production introspection retry:", latest, flush=True)
+              time.sleep(10)
+          else:
+              raise SystemExit("Render API checks failed: " + str(latest))
+          PY

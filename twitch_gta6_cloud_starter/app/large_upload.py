@@ -30,11 +30,12 @@ class StartUpload(BaseModel):
     filename: str = Field(min_length=1, max_length=160)
     size_bytes: int = Field(gt=0)
     authorized: bool
-    clip_seconds: int = Field(default=65, ge=3, le=90)
+    clip_seconds: int = Field(default=30, ge=3, le=90)
+    render_width: int = Field(default=720, ge=360, le=1080)
     auto_subtitles: bool | None = None
     music_enabled: bool = True
     vision_enabled: bool = False
-    rhythmic: bool = False
+    rhythmic: bool = True
     voiceover: bool = False
     clip_count: int = Field(default=1, ge=1, le=3)
     face_bottom_left: bool = False
@@ -109,6 +110,8 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
         raise HTTPException(403, "Confirm ownership or reuse permission for this video")
     if not data.filename.lower().endswith((".mp4", ".mov", ".mkv")):
         raise HTTPException(415, "Choose an MP4, MOV, or MKV file")
+    if data.render_width not in {360, 540, 720, 1080}:
+        raise HTTPException(422, "Choose render_width 360, 540, 720 or 1080")
     if data.size_bytes > _UPLOAD_LIMIT:
         raise HTTPException(
             413, f"Video exceeds the browser-upload limit ({_UPLOAD_LIMIT // 1048576} MB)"
@@ -139,6 +142,7 @@ def start_upload(data: StartUpload, x_admin_token: str | None = Header(default=N
             "authorized": True,
             "filename": Path(data.filename).name[:160],
             "clip_seconds": data.clip_seconds,
+            "render_width": data.render_width,
             "auto_subtitles": bool(auto_subtitles),
             "music_enabled": bool(data.music_enabled),
             "vision_enabled": data.vision_enabled,
@@ -246,8 +250,8 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             raise HTTPException(422, "The completed upload is not a valid playable video") from exc
         if info["duration"] > MAX_SOURCE_SECONDS:
             raise HTTPException(422, "Source video exceeds the 12-hour input limit")
-        if info["duration"] < meta["clip_seconds"] - 0.1 and meta["clip_seconds"] >= 61:
-            raise HTTPException(422, "Video must be at least as long as the requested clip")
+        if info["duration"] < meta["clip_seconds"] - 0.1:
+            raise HTTPException(422, "La vidéo source est plus courte que la durée du clip demandée")
         if meta.get("chat_seconds"):
             (folder / "chat-seconds.json").write_text(json.dumps(meta["chat_seconds"]), encoding="utf-8")
         if meta.get("clip_count", 1) > 1 and info["duration"] < meta["clip_count"] * meta["clip_seconds"]:
@@ -259,6 +263,7 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
             "upload_progress": 100.0,
             "input_bytes": meta["expected_bytes"],
             "requested_duration_seconds": meta["clip_seconds"],
+            "render_width": meta.get("render_width", 720),
             "auto_subtitles_requested": meta["auto_subtitles"],
             "subtitles_required": meta.get("subtitles_required", False),
             "vision_enabled": meta.get("vision_enabled", False),
@@ -272,7 +277,9 @@ def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | 
         })
         routes._write_status(folder, status)
         _metadata_path(job_id).unlink(missing_ok=True)
+    render_width = int(meta.get("render_width", 720))
     options = {
+        "width": render_width, "height": render_width * 16 // 9,
         "auto_subtitles": meta["auto_subtitles"],
         "music_enabled": meta["music_enabled"],
         "hook_text": meta["hook_text"],
@@ -387,10 +394,12 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 <details><summary>Ajouter les données du chat</summary><label for="chat">Chat horodaté (JSON facultatif)</label><input id="chat" type="file" accept=".json,application/json">
 <p class="muted">Liste des secondes de chaque message depuis le début de la vidéo, par exemple [12.3, 14, 14.5].</p>
 </details><label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
-<label><input id="faceLeft" type="checkbox" checked> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
-<label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="22">
+<label><input id="faceLeft" type="checkbox"> Agrandir la webcam en bas à gauche (si présente dans la source)</label>
+<label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="3" max="90" value="30">
+<label for="quality">Résolution de sortie</label>
+<select id="quality"><option value="720">720×1280 · recommandé sur Render Starter</option><option value="1080">1080×1920 · Full HD, demande plus de mémoire</option><option value="540">540×960 · rapide</option></select>
 <label for="hook">Texte d'accroche</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
-<label><input id="voiceover" type="checkbox" checked> Lire l’accroche en voix off anglaise</label>
+<label><input id="voiceover" type="checkbox"> Lire l’accroche fournie en voix off synthétique (optionnel)</label>
 <label for="subtitles">Sous-titres anglais</label>
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
 <label><input id="vision" type="checkbox"> Faire comparer les images des moments candidats par OpenAI</label>
@@ -499,7 +508,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
    showJob(job);
    for(let count=0;count<180;count++){
      const state=await api('/video/jobs/'+job);
-     show('Job : '+job+'\nStatut : '+state.state+'\n'+
+     show('Job : '+job+'\nStatut : '+state.state+'\nÉtape : '+(state.stage||'en cours')+'\nProgression : '+(state.progress||0)+' %\n'+
        (state.result?('Durée : '+state.result.duration_seconds+' secondes\nSous-titres : '+state.result.caption_mode):'')+
        (state.transcription_warning?'\nAttention : transcription indisponible ('+state.transcription_warning+'); MP4 quand même produit.':''));
      if(state.state==='done'){
@@ -641,7 +650,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
      const subtitles=el('subtitles').value;
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
-       clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
+       clip_seconds:Number(el('seconds').value),render_width:Number(el('quality').value),music_enabled:el('music').checked,
        hook_text:el('hook').value,vision_enabled:el('vision').checked,rhythmic:el('rhythmic').checked,voiceover:el('voiceover').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';

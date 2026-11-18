@@ -1,9 +1,8 @@
-"""English caption extraction using a separately configured API key.
+"""English captions using an OpenAI key OR Render OIDC workload identity.
 
-Whisper-1 word timestamps support English-language synchronization in 2026;
-this API model is deprecated and must be replaced before its 2027 shutdown.
-Non-English translation produces segment-timed English captions, not
-individually aligned English words. No API calls without OPENAI_API_KEY.
+Whisper-1 word timestamps support English-language synchronization until
+its scheduled February 2027 retirement. Non-English translation currently
+uses approximate segment timing. Calls require explicitly configured auth.
 """
 import math
 import os
@@ -11,7 +10,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import requests
 
 
 class CaptionError(RuntimeError):
@@ -29,39 +27,95 @@ def _run_ffmpeg_audio(source: Path, target: Path, start: float, duration: float)
         raise CaptionError("Cannot extract speech audio from video")
 
 
+def openai_auth_status():
+    """Return non-secret setup readiness, not proof that OpenAI accepted it."""
+    key_present = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    provider = os.getenv("OPENAI_IDENTITY_PROVIDER_ID", "").strip()
+    account = os.getenv("OPENAI_SERVICE_ACCOUNT_ID", "").strip()
+    token_path = os.getenv("OPENAI_IDENTITY_TOKEN_FILE", "").strip()
+    # The token path is created automatically by Render; never set it manually.
+    token_available = bool(token_path and Path(token_path).is_file())
+    oidc_ready = bool(provider and account and token_available)
+    method = (
+        "workload_identity" if oidc_ready
+        else "api_key" if key_present
+        else "unconfigured"
+    )
+    return {
+        "configured": bool(oidc_ready or key_present),
+        "method": method,
+        "api_key_present": key_present,
+        "identity_provider_id_present": bool(provider),
+        "service_account_id_present": bool(account),
+        "identity_token_file_available": token_available,
+        "oidc_ready": oidc_ready,
+    }
+
+
+def _openai_client():
+    """Use OIDC when ready, otherwise the existing environment API key."""
+    status = openai_auth_status()
+    if not status["configured"]:
+        raise CaptionError(
+            "Configure OPENAI_API_KEY or complete OpenAI Render workload identity"
+        )
+    from openai import OpenAI
+    if status["oidc_ready"]:
+        # Read the file for each token exchange; never cache a short-lived JWT.
+        return OpenAI(
+            workload_identity={
+                "identity_provider_id": os.environ["OPENAI_IDENTITY_PROVIDER_ID"],
+                "service_account_id": os.environ["OPENAI_SERVICE_ACCOUNT_ID"],
+                "provider": {
+                    "token_type": "jwt",
+                    "get_token": lambda: Path(
+                        os.environ["OPENAI_IDENTITY_TOKEN_FILE"]
+                    ).read_text(encoding="utf-8").strip(),
+                },
+            },
+            timeout=180.0,
+            max_retries=1,
+        )
+    return OpenAI(
+        api_key=os.environ["OPENAI_API_KEY"].strip(),
+        timeout=180.0,
+        max_retries=1,
+    )
+
+
 def _request_whisper(audio_file: Path, *, translate=False):
-    key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise CaptionError("OPENAI_API_KEY is not configured")
-    endpoint = "translations" if translate else "transcriptions"
-    # Fixed API host; never send the key to user-supplied URLs or log its value.
-    with audio_file.open("rb") as stream:
-        data = {"model": "whisper-1", "response_format": "verbose_json"}
-        if not translate:
-            data["timestamp_granularities[]"] = "word"
-        try:
-            response = requests.post(
-                "https://api.openai.com/v1/audio/" + endpoint,
-                headers={"Authorization": "Bearer " + key},
-                data=data,
-                files={"file": (audio_file.name, stream, "audio/mpeg")},
-                timeout=180,
-            )
-        except requests.RequestException as exc:
-            raise CaptionError("Transcription network error") from exc
-    if response.status_code in (401, 403):
-        raise CaptionError("Transcription API key unauthorized")
-    if response.status_code == 429:
-        raise CaptionError("Transcription API rate limit or quota exceeded")
-    if response.status_code >= 400:
-        raise CaptionError("Transcription provider returned an error")
+    # The official Python SDK manages both OIDC token exchange and API keys.
+    from openai import APIConnectionError, APIStatusError, OpenAIError
+    client = _openai_client()
     try:
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Not JSON object")
-        return payload
-    except (ValueError, TypeError) as exc:
-        raise CaptionError("Invalid transcription response") from exc
+        with audio_file.open("rb") as stream:
+            if translate:
+                response = client.audio.translations.create(
+                    model="whisper-1",
+                    file=stream,
+                    response_format="verbose_json",
+                )
+            else:
+                response = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=stream,
+                    response_format="verbose_json",
+                    timestamp_granularities=["word"],
+                )
+        payload = response.model_dump(exclude_none=True)
+    except APIStatusError as exc:
+        if exc.status_code in (401, 403):
+            raise CaptionError("OpenAI authentication rejected; verify identity mapping or API key") from exc
+        if exc.status_code == 429:
+            raise CaptionError("OpenAI quota or transcription rate limit exceeded") from exc
+        raise CaptionError(f"OpenAI audio API failed with HTTP {exc.status_code}") from exc
+    except APIConnectionError as exc:
+        raise CaptionError("Could not connect to the OpenAI audio API") from exc
+    except OpenAIError as exc:
+        raise CaptionError("OpenAI audio transcription request failed") from exc
+    if not isinstance(payload, dict):
+        raise CaptionError("OpenAI transcription response was not an object")
+    return payload
 
 
 def _safe_word(word, start, end, duration):

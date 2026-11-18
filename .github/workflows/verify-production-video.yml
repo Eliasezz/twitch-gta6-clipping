@@ -1,0 +1,51 @@
+name: Verify production MP4 smoke test
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verify-production-video.yml"
+
+jobs:
+  check-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Poll Render public readiness and video test outcome
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          url = "https://twitch-gta6-clipping.onrender.com/video/ready"
+          for index in range(25):
+              try:
+                  with urllib.request.urlopen(url, timeout=25) as response:
+                      data = json.load(response)
+                  state = data.get("production_selftest") or {}
+                  print(json.dumps({
+                      "server": data.get("available"),
+                      "protected_api_configured": data.get("configured_for_private_jobs"),
+                      "demo_route": data.get("demo_without_upload"),
+                      "selftest_state": state.get("state"),
+                      "selftest_duration": state.get("duration_seconds"),
+                  }), flush=True)
+                  if data.get("available") is not True:
+                      raise RuntimeError("FFmpeg unavailable on Render")
+                  if data.get("configured_for_private_jobs") is not True:
+                      raise RuntimeError("Admin token missing on Render")
+                  if data.get("demo_without_upload") != "/video/demo":
+                      raise RuntimeError("Demo endpoint not deployed")
+                  if state.get("state") == "done":
+                      duration = float(state.get("duration_seconds") or 0)
+                      if duration < 61.0:
+                          raise RuntimeError(f"MP4 too short: {duration}")
+                      print("SUCCESS: 65-second MP4 rendered on production Render", flush=True)
+                      raise SystemExit(0)
+                  if state.get("state") == "failed":
+                      raise RuntimeError("Production video job failed")
+              except urllib.error.URLError as exc:
+                  print("Readiness request failed:", type(exc).__name__, flush=True)
+              time.sleep(12)
+          raise SystemExit("Production selftest did not finish within the verification window")
+          PY

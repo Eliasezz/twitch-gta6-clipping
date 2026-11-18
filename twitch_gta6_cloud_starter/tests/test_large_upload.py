@@ -111,6 +111,22 @@ class ChunkUploadTests(unittest.TestCase):
         self.assertEqual(large_request["state"],"uploading")
         self.assertEqual(large_request["max_upload_mb"],300)
 
+    def test_copy_job_and_admin_token_ui_without_leaking_secret(self):
+        html = large_upload.uploader_page()
+        for component in (
+            'id="token"', 'id="toggleToken"', 'id="copyToken"',
+            'id="jobPanel"', 'id="jobId"', 'id="copyJob"',
+            'id="existingJob"', 'id="resumeJob"',
+        ):
+            self.assertIn(component, html)
+        self.assertIn("navigator.clipboard.writeText", html)
+        self.assertIn("function showJob(job)", html)
+        self.assertIn("showJob(job);", html)
+        self.assertIn("readonly spellcheck", html)
+        self.assertNotIn("secret-for-test", html)
+        self.assertNotIn("localStorage", html)
+        self.assertNotIn("sessionStorage", html)
+
     def test_existing_web_page_has_download_flow(self):
         html=large_upload.uploader_page()
         self.assertIn('id="video"',html)

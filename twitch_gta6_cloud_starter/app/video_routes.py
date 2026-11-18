@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 
 from .video_pipeline import VideoPipelineError, render_mp4, probe
 from .publishing import publication_package, sign_share_link, verify_share_link
+from .captions import openai_auth_status
 
 router = APIRouter(prefix="/video", tags=["video-workflow"])
 VIDEO_DIR = Path(os.getenv("VIDEO_STORAGE_DIR", "/data/videos"))
@@ -232,9 +233,13 @@ def video_ready():
         "available": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
         "configured_for_private_jobs": bool(os.getenv("POLL_ADMIN_TOKEN", "").strip()),
         "workflow": "authorized-file-upload -> audio-activity highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
-        "auto_speech_transcription": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "auto_speech_transcription": openai_auth_status()["configured"],
+        "transcription_authentication_method": openai_auth_status()["method"],
+        "transcription_oidc_provider_configured": openai_auth_status()["identity_provider_id_present"],
+        "transcription_oidc_service_account_configured": openai_auth_status()["service_account_id_present"],
+        "transcription_oidc_token_file_available": openai_auth_status()["identity_token_file_available"],
         "transcription_provider": "openai_whisper_1_optional",
-        "transcription_requires_api_key": True,
+        "transcription_requires_credentials": True,
         "automatic_social_publishing": __import__(
             "app.autopilot", fromlist=["readiness"]
         ).readiness()["ready_for_automatic_publishing"],
@@ -265,11 +270,13 @@ def create_video_job(background_tasks: BackgroundTasks,
         raise HTTPException(422, "clip_seconds must be 3 to 90")
     # If omitted from Swagger, auto-select transcription whenever a platform
     # key is configured. Explicit false still avoids any paid transcription.
-    has_speech_key = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    speech_auth_ready = openai_auth_status()["configured"]
     if auto_subtitles is None:
-        auto_subtitles = has_speech_key
-    if auto_subtitles and not has_speech_key:
-        raise HTTPException(503, "Add OPENAI_API_KEY in Render before using auto_subtitles")
+        auto_subtitles = speech_auth_ready
+    if auto_subtitles and not speech_auth_ready:
+        raise HTTPException(
+            503, "Configure OPENAI_API_KEY or OpenAI OIDC workload identity in Render"
+        )
     if len(hook_text) > 80:
         raise HTTPException(422, "hook_text must contain 80 characters or fewer")
     if len(caption_text) > 5000:

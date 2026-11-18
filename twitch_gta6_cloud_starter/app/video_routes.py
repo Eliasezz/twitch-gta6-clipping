@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 import shutil
+import subprocess
 import threading
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -78,7 +79,7 @@ def _read_status(job_id):
         raise HTTPException(500, "Video job metadata unavailable") from exc
 
 
-def _worker(job_id, caption_text, clip_seconds):
+def _worker(job_id, caption_text, clip_seconds, width=720, height=1280):
     folder = _job_dir(job_id)
     with _render_lock:
         status = _read_status(job_id)
@@ -89,7 +90,7 @@ def _worker(job_id, caption_text, clip_seconds):
             output = folder / "vertical.mp4"
             probe(source)
             result = render_mp4(source, output, caption_text=caption_text,
-                                clip_seconds=clip_seconds)
+                                clip_seconds=clip_seconds, width=width, height=height)
             status.update({"state": "done", "result": result,
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
         except Exception as error:
@@ -99,6 +100,125 @@ def _worker(job_id, caption_text, clip_seconds):
         finally:
             (folder / "source.mp4").unlink(missing_ok=True)
             _write_status(folder, status)
+
+
+def _demo_worker(job_id: str, clip_seconds: int):
+    """Generate an original synthetic source video, then test the regular editor."""
+    folder = _job_dir(job_id)
+    source = folder / "source.mp4"
+    # 12 fps keeps synthetic source generation cheap on Render's small instance.
+    command = [
+        shutil.which("ffmpeg") or "ffmpeg",
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i",
+        f"testsrc2=size=480x270:rate=12:duration={clip_seconds + 1}",
+        "-f", "lavfi", "-i",
+        f"sine=frequency=530:sample_rate=22050:duration={clip_seconds + 1}",
+        "-c:v", "mpeg4", "-q:v", "14",
+        "-c:a", "aac", "-b:a", "40k",
+        "-shortest", str(source),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                check=False, timeout=160)
+        if result.returncode != 0:
+            raise VideoPipelineError("Synthetic source generation failed")
+        # Render a smaller preview to avoid exhausting a 512-MB instance.
+        _worker(
+            job_id,
+            "SYNTHETIC TEST ONLY THIS IS A VIDEO WORKFLOW DEMONSTRATION",
+            clip_seconds, width=360, height=640,
+        )
+    except Exception as error:
+        (folder / "source.mp4").unlink(missing_ok=True)
+        status = _read_status(job_id)
+        status.update({"state": "failed", "error": type(error).__name__})
+        _write_status(folder, status)
+        print("Synthetic video demo failed:", job_id, type(error).__name__)
+
+
+@router.post("/demo", status_code=202)
+def create_demo_job(background_tasks: BackgroundTasks,
+                    clip_seconds: int = 65,
+                    x_admin_token: str | None = Header(default=None)):
+    """No upload needed: create an ORIGINAL test pattern, then render an MP4."""
+    _authorize(x_admin_token)
+    if clip_seconds < 3 or clip_seconds > 90:
+        raise HTTPException(422, "clip_seconds must be between 3 and 90")
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise HTTPException(503, "FFmpeg is unavailable")
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    _cleanup_finished_jobs()
+    if shutil.disk_usage(VIDEO_DIR).free < 150 * 1024 * 1024:
+        raise HTTPException(507, "Not enough disk space for the demo")
+    job_id = str(uuid.uuid4())
+    folder = _job_dir(job_id)
+    folder.mkdir(parents=True, exist_ok=False)
+    status = {
+        "job_id": job_id, "state": "queued",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "demo": True, "source_type": "original_synthetic",
+        "requested_duration_seconds": clip_seconds,
+        "note": "This is a synthetic technical test, not monetizable content.",
+    }
+    _write_status(folder, status)
+    background_tasks.add_task(_demo_worker, job_id, clip_seconds)
+    return status
+
+
+def start_internal_selftest():
+    """Optional one-time production smoke test; never downloads third-party media."""
+    if os.getenv("VIDEO_SELFTEST_ONCE", "").strip() != "1":
+        return
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    manifest = VIDEO_DIR / "selftest.json"
+    duration = 65
+    job_id = None
+    if manifest.is_file():
+        try:
+            entry = json.loads(manifest.read_text(encoding="utf-8"))
+            job_id = entry["job_id"]
+            previous = _read_status(job_id)
+            if previous.get("state") == "done":
+                print("Video production self-test already passed:", job_id)
+                return
+        except (OSError, KeyError, ValueError, HTTPException):
+            job_id = None
+    if not job_id:
+        job_id = str(uuid.uuid4())
+        folder = _job_dir(job_id)
+        folder.mkdir(parents=True, exist_ok=False)
+        _write_status(folder, {
+            "job_id": job_id, "state": "queued", "demo": True,
+            "source_type": "original_synthetic",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "requested_duration_seconds": duration,
+        })
+        temp = manifest.with_suffix(".tmp")
+        temp.write_text(json.dumps({"job_id": job_id}), encoding="utf-8")
+        temp.replace(manifest)
+    print("Video production self-test started:", job_id)
+    threading.Thread(
+        target=_demo_worker, args=(job_id, duration),
+        daemon=True, name="mp4-production-smoke"
+    ).start()
+
+
+def _selftest_summary():
+    manifest = VIDEO_DIR / "selftest.json"
+    if not manifest.is_file():
+        return {"state": "not_run"}
+    try:
+        job_id = json.loads(manifest.read_text(encoding="utf-8"))["job_id"]
+        status = _read_status(job_id)
+        return {
+            "state": status.get("state", "unknown"),
+            "duration_seconds": (status.get("result") or {}).get("duration_seconds"),
+            "job_id": job_id,
+            "download_endpoint": status.get("download_endpoint"),
+        }
+    except (OSError, ValueError, KeyError, HTTPException):
+        return {"state": "unavailable"}
 
 
 @router.get("/ready")
@@ -111,6 +231,8 @@ def video_ready():
         "automatic_social_publishing": False,
         "recommended_tiktok_duration_seconds": 65,
         "max_clip_duration_seconds": 90,
+        "demo_without_upload": "/video/demo",
+        "production_selftest": _selftest_summary(),
     }
 
 

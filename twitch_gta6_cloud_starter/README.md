@@ -70,6 +70,38 @@ Then open `/health`.
 Run `python -m unittest discover -s tests -v` from `twitch_gta6_cloud_starter`, or review the GitHub Actions workflow. Clips marked eligible are **not** automatically licensed: you are responsible for obtaining the relevant creator permissions and complying with each platform's rules.
 
 
+## No-upload demo (real MP4 technical test)
+
+Once `POLL_ADMIN_TOKEN` is configured in Render, open
+`https://twitch-gta6-clipping.onrender.com/docs`, then use
+`POST /video/demo` (under **video-workflow**):
+
+1. Click **Try it out**.
+2. Set `clip_seconds=65` and paste your **admin token** into
+   `X-Admin-Token` (not your Twitch Client Secret).
+3. Click **Execute**. No video file and no `authorized` checkbox required.
+4. Copy the returned `job_id`.
+5. Use `GET /video/jobs/{job_id}` with the same admin token.
+   Once the state becomes `done`, call
+   `GET /video/jobs/{job_id}/download` to download the MP4.
+
+This creates a synthetic test-pattern video with a test audio tone, and
+runs it through the real editor. For demo workloads it renders a small
+360x640 preview to limit CPU and memory consumption. It is **not** GTA VI,
+a streamer clip, licensed media, or monetizable content. For real clips,
+`POST /video/jobs` still requires an authorized video source upload.
+
+### Optional one-time server self-test
+
+Setting `VIDEO_SELFTEST_ONCE=1` in Render triggers one private, 65-second
+synthetic video render on startup. It creates a persistent `selftest.json`
+manifest so a successful self-test is not repeated after restarts.
+Check `GET /video/ready` and its `production_selftest.state` field; state
+`done` and `duration_seconds` ~65 verify a video was successfully rendered
+inside Render. Its MP4 can be retrieved using the usual authenticated
+`GET /video/jobs/{job_id}/download` endpoint. No third-party clip is fetched.
+
+
 ## Video workflow (FFmpeg, no additional subscription)
 
 The Render native Python runtime includes `ffmpeg` and `ffprobe`. This

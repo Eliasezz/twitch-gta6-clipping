@@ -1,6 +1,6 @@
 # Twitch GTA VI Clips — Cloud starter
 
-This is a **starter project**, not a deployed service. It polls Twitch for public GTA VI clip metadata and stores discoveries in SQLite. It deliberately does **not** download or republish third-party clips automatically.
+This service polls Twitch for public GTA VI clip metadata and stores discoveries in SQLite. It deliberately does **not** download or republish third-party clips automatically. A clip is marked eligible only when it meets the view threshold AND its broadcaster ID is present in `ALLOWED_BROADCASTER_IDS`.
 
 ## Why the reuse gate exists
 Twitch metadata access is not blanket permission to download/re-edit/repost every creator's video. Twitch's clip-download endpoint has additional authorization requirements. Before processing or publishing a creator's clip, obtain permission/licensing and configure that broadcaster in `ALLOWED_BROADCASTER_IDS`. Do not remove this gate to bypass creator permissions.
@@ -11,7 +11,9 @@ Twitch metadata access is not blanket permission to download/re-edit/repost ever
 - Twitch App Access Token via Client ID + Client Secret
 - GTA VI game ID lookup and recent clip metadata polling
 - SQLite deduplication
-- Allowlist gate for creators who have explicitly authorized reuse
+- Enforced allowlist gate for creators who have explicitly authorized reuse
+- Cursor pagination for collection limits above 100 clips per source
+- Backward-compatible `MAX_CLIPS_PER_POLL` / `MAX_CLIPS` configuration
 
 ## Not included / not yet connected
 - Cloud deployment (requires your hosting account and its environment variables)
@@ -30,7 +32,12 @@ Twitch metadata access is not blanket permission to download/re-edit/repost ever
 - `TWITCH_CLIENT_ID` — Twitch application Client ID
 - `TWITCH_CLIENT_SECRET` — Twitch application Client Secret
 - `POLL_INTERVAL_SECONDS` — polling interval, default 900 (15 minutes)
-- `MAX_CLIPS_PER_POLL` — max metadata records per poll, default 100
+- `MAX_CLIPS_PER_POLL` — max metadata records per category poll, default 100 (up to 1000)
+- `MAX_CLIPS` — legacy alias for `MAX_CLIPS_PER_POLL`
+- `KNOWN_CLIPS_LIMIT` — max metadata records per followed broadcaster, default 20 (up to 1000)
+- `MIN_CLIP_VIEWS` — minimum view count for eligibility, default 100
+- `CLIP_LOOKBACK_HOURS` — discovery window, default 24
+- `KNOWN_STREAMERS` — comma-separated Twitch logins to monitor
 - `ALLOWED_BROADCASTER_IDS` — comma-separated Twitch broadcaster IDs with explicit reuse permission; empty means no clip is eligible for processing
 - `DATABASE_PATH` — default `/data/clips.sqlite3`
 

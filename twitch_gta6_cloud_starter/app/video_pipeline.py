@@ -199,7 +199,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
                                 width=width, height=height, dynamic_zoom=False, auto_subtitles=auto_subtitles,
                                 music_enabled=music_enabled, hook_text=hook_text, subtitles_required=subtitles_required,
                                 voiceover=voiceover, prepared=True)
-        output.update(start_seconds=start, highlight_analysis=analysis, selection_mode="rhythmic_four_shots")
+        output.update(start_seconds=start, highlight_analysis=analysis, selection_mode="rhythmic_source_cuts")
         return output
     selection = "sampled_audio_visual_chat" if start or duration < info["duration"] else "entire_video"
     destination.parent.mkdir(parents=True, exist_ok=True)

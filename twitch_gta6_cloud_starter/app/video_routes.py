@@ -98,9 +98,14 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_sub
                                 clip_seconds=clip_seconds, width=width, height=height,
                                 auto_subtitles=auto_subtitles, music_enabled=music_enabled,
                                 hook_text=hook_text)
-            status.update({"state": "done", "result": result,
-                           "publication_status": "review_required",
-                           "download_endpoint": f"/video/jobs/{job_id}/download"})
+            status.update({
+                "state": "done", "result": result,
+                "publication_status": (
+                    "review_required_caption_fallback"
+                    if status.get("subtitles_pending") else "review_required"
+                ),
+                "download_endpoint": f"/video/jobs/{job_id}/download",
+            })
         except Exception as error:
             # Mark all worker failures, including subprocess timeouts, as failed.
             status.update({"state": "failed", "error": type(error).__name__})
@@ -108,13 +113,13 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_sub
         finally:
             # Preserve the uploaded source when a render fails, so the user can
             # retry with corrected settings without uploading a large VOD again.
-            if status.get("state") == "done":
+            if status.get("state") == "done" and not status.get("subtitles_pending"):
                 (folder / "source.mp4").unlink(missing_ok=True)
-                status["source_retained_for_retry"] = False
+            status["source_retained_for_retry"] = (folder / "source.mp4").is_file()
+            if status.get("state") == "done":
                 print("Video job finished:", job_id,
-                      (status.get("result") or {}).get("duration_seconds"))
-            else:
-                status["source_retained_for_retry"] = (folder / "source.mp4").is_file()
+                      (status.get("result") or {}).get("duration_seconds"),
+                      "subtitles_pending:", bool(status.get("subtitles_pending")))
             _write_status(folder, status)
 
 
@@ -366,8 +371,11 @@ def retry_failed_video_job(
     with _render_lock:
         status = _read_status(job_id)
         source = _job_dir(job_id) / "source.mp4"
-        if status.get("state") != "failed" or not source.is_file():
-            raise HTTPException(409, "Failed video source is not available for retry")
+        if (
+            status.get("state") != "failed"
+            and not (status.get("state") == "done" and status.get("subtitles_pending"))
+        ) or not source.is_file():
+            raise HTTPException(409, "Original video is not available for retry")
         if auto_subtitles is None:
             auto_subtitles = bool(status.get("auto_subtitles_requested", False))
         if auto_subtitles and not openai_auth_status()["configured"]:
@@ -375,6 +383,8 @@ def retry_failed_video_job(
         status["state"] = "queued"
         status.pop("error", None)
         status["auto_subtitles_requested"] = auto_subtitles
+        if auto_subtitles:
+            status["subtitles_pending"] = False
         status["publication_status"] = "not_ready"
         _write_status(_job_dir(job_id), status)
     background_tasks.add_task(

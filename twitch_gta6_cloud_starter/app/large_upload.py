@@ -17,7 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Header, HTTPException, Que
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from .video_pipeline import VideoPipelineError, probe
+from .video_pipeline import VideoPipelineError, MAX_SOURCE_SECONDS, probe
 
 router = APIRouter(prefix="/video", tags=["large-video-upload"])
 _CHUNK_BYTES = 6 * 1024 * 1024
@@ -211,25 +211,29 @@ def upload_chunk(job_id: str, index: int = Query(ge=0),
         }
 
 
-@router.post("/uploads/{job_id}/finish", status_code=202)
-def finish_upload(job_id: str, background_tasks: BackgroundTasks,
-                  x_admin_token: str | None = Header(default=None)):
+def _finalize_completed_upload(job_id: str, background_tasks: BackgroundTasks | None = None):
+    """Finalize a trusted on-disk upload once, optionally during server startup.
+
+    The web route authorizes before calling this. Startup only scans upload
+    sessions previously marked authorized and completely received on disk.
+    """
     routes = _routes()
-    routes._authorize(x_admin_token)
     with _LOCK:
         meta = _read_meta(job_id)
         folder = routes._job_dir(job_id)
         temp_file = folder / "source.part"
         if not temp_file.is_file() or temp_file.stat().st_size != meta["expected_bytes"]:
             raise HTTPException(409, "Upload is incomplete; send the remaining chunks")
+        if not meta.get("authorized"):
+            raise HTTPException(403, "Upload is not authorized for processing")
         try:
             info = probe(temp_file)
         except VideoPipelineError as exc:
             raise HTTPException(422, "The completed upload is not a valid playable video") from exc
-        if info["duration"] > 900:
-            raise HTTPException(422, "Source video exceeds 15 minutes")
+        if info["duration"] > MAX_SOURCE_SECONDS:
+            raise HTTPException(422, "Source video exceeds the 12-hour input limit")
         if info["duration"] < meta["clip_seconds"] - 0.1 and meta["clip_seconds"] >= 61:
-            raise HTTPException(422, "Video must be at least as long as the requested 65-second clip")
+            raise HTTPException(422, "Video must be at least as long as the requested clip")
         temp_file.rename(folder / "source.mp4")
         status = routes._read_status(job_id)
         status.update({
@@ -244,17 +248,69 @@ def finish_upload(job_id: str, background_tasks: BackgroundTasks,
         })
         routes._write_status(folder, status)
         _metadata_path(job_id).unlink(missing_ok=True)
-    background_tasks.add_task(
-        routes._worker, job_id, meta["caption_text"], meta["clip_seconds"],
-        auto_subtitles=meta["auto_subtitles"],
-        music_enabled=meta["music_enabled"],
-        hook_text=meta["hook_text"],
-    )
+    options = {
+        "auto_subtitles": meta["auto_subtitles"],
+        "music_enabled": meta["music_enabled"],
+        "hook_text": meta["hook_text"],
+    }
+    if background_tasks is not None:
+        background_tasks.add_task(
+            routes._worker, job_id, meta["caption_text"], meta["clip_seconds"],
+            **options,
+        )
+    else:
+        # Recover a fully-uploaded, previously rejected source after deploy,
+        # without exposing admin credentials or demanding another upload.
+        threading.Thread(
+            target=routes._worker,
+            args=(job_id, meta["caption_text"], meta["clip_seconds"]),
+            kwargs=options,
+            daemon=True,
+            name="recovered-video-" + job_id[:8],
+        ).start()
     return {
         "job_id": job_id, "state": "queued",
         "status_endpoint": "/video/jobs/" + job_id,
         "export_endpoint": "/video/jobs/" + job_id + "/export-link",
     }
+
+
+@router.post("/uploads/{job_id}/finish", status_code=202)
+def finish_upload(job_id: str, background_tasks: BackgroundTasks,
+                  x_admin_token: str | None = Header(default=None)):
+    _routes()._authorize(x_admin_token)
+    return _finalize_completed_upload(job_id, background_tasks)
+
+
+def recover_completed_uploads():
+    """At startup, resume eligible 100%-received sessions blocked by old code.
+
+    Incomplete uploads are intentionally left unchanged. Does not reprocess
+    completed or failed jobs, and requires stored permission confirmation.
+    """
+    routes = _routes()
+    if not routes.VIDEO_DIR.is_dir():
+        return []
+    recovered = []
+    for metadata in sorted(routes.VIDEO_DIR.glob("*/upload.json")):
+        try:
+            job_id = metadata.parent.name
+            if str(uuid.UUID(job_id)) != job_id:
+                continue
+            data = _read_meta(job_id)
+            file = metadata.parent / "source.part"
+            if (
+                data.get("authorized") is True
+                and data.get("received_bytes") == data.get("expected_bytes")
+                and file.is_file()
+                and file.stat().st_size == data.get("expected_bytes")
+            ):
+                _finalize_completed_upload(job_id)
+                recovered.append(job_id)
+                print("Recovered uploaded video job:", job_id)
+        except Exception as error:
+            print("Video upload recovery skipped:", metadata.parent.name, type(error).__name__)
+    return recovered
 
 
 UPLOADER_HTML = r"""<!doctype html>
@@ -415,6 +471,12 @@ progress{margin-top:18px;width:100%;height:20px}
    }
    show('Montage encore en cours. Note ton job_id pour vérifier son statut : '+job);
  }
+ const providedJob=new URLSearchParams(window.location.search).get('job_id');
+ if(providedJob && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(providedJob)){
+   el('existingJob').value=providedJob;
+   showJob(providedJob);
+   show('Import retrouvé : colle ton token puis clique sur Vérifier ce job_id.');
+ }
  el('resumeJob').addEventListener('click',async()=>{
    const token=el('token').value.trim(),job=el('existingJob').value.trim();
    if(!token){show("Colle ton token d'administration dans le champ en haut.",true);return}
@@ -422,7 +484,18 @@ progress{margin-top:18px;width:100%;height:20px}
      show('job_id incorrect : colle l’identifiant complet de ta vidéo.',true);return;
    }
    const button=el('resumeJob');button.disabled=true;result.replaceChildren();
-   try{await monitor(job)}catch(e){show('Erreur : '+e.message,true)}
+   try{
+     showJob(job);
+     const current=await api('/video/jobs/'+job);
+     if(current.state==='uploading'){
+       if(Number(current.upload_progress)<100)throw Error(
+         'Import incomplet ('+current.upload_progress+' %). Il faut envoyer les morceaux manquants.'
+       );
+       show('Upload déjà complet. Reprise du montage : '+job);
+       await api('/video/uploads/'+job+'/finish',{method:'POST'});
+     }
+     await monitor(job);
+   }catch(e){show('Erreur : '+e.message,true)}
    finally{button.disabled=false}
  });
  send.addEventListener('click',async()=>{

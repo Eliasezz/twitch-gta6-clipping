@@ -79,7 +79,7 @@ def _read_status(job_id):
         raise HTTPException(500, "Video job metadata unavailable") from exc
 
 
-def _worker(job_id, caption_text, clip_seconds, width=720, height=1280):
+def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_subtitles=False):
     folder = _job_dir(job_id)
     with _render_lock:
         status = _read_status(job_id)
@@ -90,8 +90,10 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280):
             output = folder / "vertical.mp4"
             probe(source)
             result = render_mp4(source, output, caption_text=caption_text,
-                                clip_seconds=clip_seconds, width=width, height=height)
+                                clip_seconds=clip_seconds, width=width, height=height,
+                                auto_subtitles=auto_subtitles)
             status.update({"state": "done", "result": result,
+                           "publication_status": "review_required",
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
         except Exception as error:
             # Mark all worker failures, including subprocess timeouts, as failed.
@@ -227,7 +229,9 @@ def video_ready():
         "available": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
         "configured_for_private_jobs": bool(os.getenv("POLL_ADMIN_TOKEN", "").strip()),
         "workflow": "authorized-file-upload -> audio-activity highlight -> vertical 9:16 -> colored ASS subtitles -> MP4",
-        "auto_speech_transcription": False,
+        "auto_speech_transcription": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "transcription_provider": "openai_whisper_1_optional",
+        "transcription_requires_api_key": True,
         "automatic_social_publishing": False,
         "recommended_tiktok_duration_seconds": 65,
         "max_clip_duration_seconds": 90,
@@ -241,6 +245,7 @@ def create_video_job(background_tasks: BackgroundTasks,
                      video: UploadFile = File(...),
                      authorized: bool = Form(False),
                      caption_text: str = Form(""),
+                     auto_subtitles: bool = Form(False),
                      clip_seconds: int = Form(65),
                      x_admin_token: str | None = Header(default=None)):
     _authorize(x_admin_token)
@@ -248,6 +253,8 @@ def create_video_job(background_tasks: BackgroundTasks,
         raise HTTPException(403, "Confirm you own this media or have explicit reuse permission")
     if clip_seconds < 3 or clip_seconds > 90:
         raise HTTPException(422, "clip_seconds must be 3 to 90")
+    if auto_subtitles and not os.getenv("OPENAI_API_KEY", "").strip():
+        raise HTTPException(503, "Add OPENAI_API_KEY in Render before using auto_subtitles")
     if len(caption_text) > 5000:
         raise HTTPException(413, "Caption text too long")
     if not (video.filename or "").lower().endswith((".mp4", ".mov", ".mkv")):
@@ -291,9 +298,12 @@ def create_video_job(background_tasks: BackgroundTasks,
 
     status = {"job_id": job_id, "state": "queued", "created_at": datetime.now(timezone.utc).isoformat(),
               "input_bytes": amount, "authorized": True,
-              "requested_duration_seconds": clip_seconds}
+              "requested_duration_seconds": clip_seconds,
+              "auto_subtitles_requested": auto_subtitles,
+              "publication_status": "not_ready"}
     _write_status(folder, status)
-    background_tasks.add_task(_worker, job_id, caption_text, clip_seconds)
+    background_tasks.add_task(_worker, job_id, caption_text, clip_seconds,
+                              auto_subtitles=auto_subtitles)
     return status
 
 

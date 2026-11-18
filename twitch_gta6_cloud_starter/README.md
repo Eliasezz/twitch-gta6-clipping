@@ -83,7 +83,9 @@ restrictions, or auto-publishes a clip.
 3. In **video-workflow**, expand `POST /video/jobs` -> **Try it out**.
 4. Set `X-Admin-Token` to the private token, check `authorized=true`
    **only if you own the video or have permission**, choose an MP4/MOV/MKV and
-   optionally supply `caption_text` (English words); click Execute.
+   optionally supply `caption_text` (English words); use `clip_seconds=65`
+   for a video longer than one minute (source footage must be at least 65 seconds);
+   click Execute.
 5. Copy the returned `job_id`. Use `GET /video/jobs/{job_id}` to check the
    `state` (queued, processing, done, failed), with the same token.
 6. Once `done`, use `GET /video/jobs/{job_id}/download` in the API docs, with
@@ -91,6 +93,15 @@ restrictions, or auto-publishes a clip.
 
 Endpoint `GET /video/ready` checks if FFmpeg is available and whether
 `POLL_ADMIN_TOKEN` is configured, without exposing any secrets.
+
+**Duration and monetization:** `clip_seconds` defaults to 65 (allowed: 3–90).
+A source shorter than the chosen 61+-second duration is rejected rather than
+silently padded or repeated. A 45-second edit is possible but **does not meet**
+TikTok Creator Rewards' >1-minute duration requirement. Length alone does
+not ensure eligibility: the content must be original, high quality, and the
+account must qualify for the program. Re-edited streamer footage can be
+ineligible even with permission. YouTube Shorts have a different revenue model
+and reused-content policies.
 
 **Current limitations:** plain caption text is split into short cards with
 **approximate timing**, not true transcription or speech alignment; the

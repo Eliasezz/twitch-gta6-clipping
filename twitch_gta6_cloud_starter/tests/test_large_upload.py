@@ -111,6 +111,77 @@ class ChunkUploadTests(unittest.TestCase):
         self.assertEqual(large_request["state"],"uploading")
         self.assertEqual(large_request["max_upload_mb"],300)
 
+    def test_legacy_twenty_minute_upload_recovers_without_resend(self):
+        response = self.create(size=4200)
+        job_id = response["job_id"]
+        self.send(job_id, 0, b"a" * 2400)
+        self.send(job_id, 1, b"b" * 1800)
+        # The prior version would have returned HTTP 422 for this duration.
+        with patch.object(large_upload, "probe", return_value={
+            "duration": 1200.0, "width": 1280,
+            "height": 720, "has_audio": True
+        }), patch.object(large_upload.threading, "Thread") as thread:
+            recovered = large_upload.recover_completed_uploads()
+        self.assertEqual(recovered, [job_id])
+        self.assertEqual(video_routes._read_status(job_id)["state"], "queued")
+        self.assertTrue((self.folder / job_id / "source.mp4").is_file())
+        self.assertFalse((self.folder / job_id / "upload.json").exists())
+        thread.return_value.start.assert_called_once()
+        self.assertEqual(large_upload.recover_completed_uploads(), [])
+        self.assertGreater(large_upload.MAX_SOURCE_SECONDS, 900)
+
+    def test_failed_render_preserves_source_for_api_retry(self):
+        from app.video_pipeline import VideoPipelineError
+        job_id = self.create(size=4200)["job_id"]
+        folder = self.folder / job_id
+        (folder / "source.mp4").write_bytes(b"x" * 4200)
+        video_routes._write_status(folder, {
+            "job_id": job_id, "state": "queued",
+            "requested_duration_seconds": 65,
+            "auto_subtitles_requested": True,
+            "music_original_generated": True,
+            "hook_text": "GTA VI | BIG REACTION",
+        })
+        with patch.object(video_routes, "probe", return_value={
+            "duration": 1200.0, "width": 1280,
+            "height": 720, "has_audio": True
+        }), patch.object(video_routes, "render_mp4",
+                        side_effect=VideoPipelineError("Mocked ASR error")):
+            video_routes._worker(
+                job_id, "", 65, auto_subtitles=True, music_enabled=True,
+            )
+        failed = video_routes._read_status(job_id)
+        self.assertEqual(failed["state"], "failed")
+        self.assertTrue(failed["source_retained_for_retry"])
+        self.assertTrue((folder / "source.mp4").is_file())
+        response = video_routes.retry_failed_video_job(
+            job_id,
+            BackgroundTasks(),
+            auto_subtitles=False,
+            x_admin_token="secret-for-test",
+        )
+        self.assertEqual(response["state"], "queued")
+        self.assertEqual(video_routes._read_status(job_id)["state"], "queued")
+
+    def test_copy_job_and_admin_token_ui_without_leaking_secret(self):
+        html = large_upload.uploader_page()
+        for component in (
+            'id="token"', 'id="toggleToken"', 'id="copyToken"',
+            'id="jobPanel"', 'id="jobId"', 'id="copyJob"',
+            'id="existingJob"', 'id="resumeJob"',
+        ):
+            self.assertIn(component, html)
+        self.assertIn("navigator.clipboard.writeText", html)
+        self.assertIn("function showJob(job)", html)
+        self.assertIn("URLSearchParams", html)
+        self.assertIn("/video/jobs/'+job+'/retry", html)
+        self.assertIn("/video/uploads/'+job+'/finish", html)
+        self.assertIn("showJob(job);", html)
+        self.assertIn("readonly spellcheck", html)
+        self.assertNotIn("secret-for-test", html)
+        self.assertNotIn("localStorage", html)
+        self.assertNotIn("sessionStorage", html)
+
     def test_existing_web_page_has_download_flow(self):
         html=large_upload.uploader_page()
         self.assertIn('id="video"',html)

@@ -12,6 +12,11 @@ import subprocess
 from pathlib import Path
 
 
+# Source files are capped at 300 MB by the browser upload endpoint.
+# A long Twitch VOD can be processed without decoding the entire recording.
+MAX_SOURCE_SECONDS = 12 * 3600
+
+
 class VideoPipelineError(RuntimeError):
     pass
 
@@ -188,8 +193,8 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     if (width, height) not in {(360, 640), (540, 960), (720, 1280)}:
         raise VideoPipelineError("Unsupported output format")
     info = probe(source)
-    if info["duration"] > 900:
-        raise VideoPipelineError("Source exceeds 15-minute processing limit")
+    if info["duration"] > MAX_SOURCE_SECONDS:
+        raise VideoPipelineError("Source exceeds 12-hour input limit")
     # Never fake a minute-long eligible-looking clip by stretching or looping short footage.
     if clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
         raise VideoPipelineError(

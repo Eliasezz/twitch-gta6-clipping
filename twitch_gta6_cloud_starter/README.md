@@ -370,16 +370,26 @@ it is not saved to local storage or put into URLs.
 
 1. Retrieve the existing `POLL_ADMIN_TOKEN` from Render Environment.
 2. On the uploader page, paste that value into the private token field.
+   Use **Afficher/Masquer** to check your entry and **Copier le token saisi**
+   to copy only the value you personally entered. The server does not expose
+   its private environment variable and the page does not store the token.
 3. Select your licensed MP4/MOV/MKV, up to 300 MB by default. The server
    still requires at least 65 seconds of true source footage for a 65s edit,
-   and sources cannot exceed 15 minutes.
+   and sources can now be as long as **12 hours** when under the 300 MB
+   upload limit. Speech/reaction selection currently scans the **first
+   180 seconds** of longer VODs, not their entire duration.
 4. Leave `65` seconds, English auto-subtitles and original music enabled.
    Confirm you own the video or have explicit reuse permission.
 5. Click **Envoyer et monter la vidéo** once. The browser streams 6MB
    pieces and shows upload percentage and the generated `job_id`.
    On complete upload it starts the **existing** FFmpeg renderer,
    monitors `GET /video/jobs/{job_id}`, and shows a direct 30-minute ZIP
-   download button upon success.
+   download button upon success. After the session starts, a read-only
+   **job_id** field and **Copier le job_id** button appear immediately.
+   Under **J'ai déjà un job_id**, paste a prior ID and click
+   **Vérifier ce job_id** to retrieve its progress or final ZIP without
+   re-uploading the video. Only the ID and a token entered by the user
+   are ever shown; the server admin token is never embedded in HTML.
 6. Open the ZIP to obtain the final MP4, title, YouTube description,
    TikTok caption and cover image (if produced).
 
@@ -403,3 +413,30 @@ API endpoints for alternative custom clients:
 Never share `POLL_ADMIN_TOKEN` or Twitch/OpenAI secrets in chat or
 screenshots. This feature does not bypass copyright licensing or automate
 publishing without configured creator OAuth and Metricool API access.
+
+
+## Recover a completed upload rejected because its source exceeded 15 minutes
+
+The old /video/uploads/{job_id}/finish endpoint returned HTTP 422 even after
+all video chunks had been received. The new code accepts source videos up to
+12 hours long (subject to file size and available disk space). On startup
+it **automatically resumes completed, permission-confirmed uploads** still
+present on the persistent disk. It does not require the admin token for
+this trusted internal recovery and never fetches third-party media.
+
+If your original import is still stored, open the video editor with
+`?job_id=<original-job-id>`, enter your existing admin token and click
+**Vérifier ce job_id**. If it is still in uploading state at 100%, that
+control will call the finalization route and launch the rendering.
+A successful recovery uses **the same job_id**, not a new one.
+When processing fails for transient reasons (e.g., transcription quota),
+the original uploaded source is now retained so the **Relancer le montage**
+or **Relancer sans transcription** buttons can retry the existing job
+without an additional upload, until scheduled cleanup.
+
+No guarantee of success can be claimed without confirming the finished MP4;
+watch GET /video/jobs/{job_id} for state=done and the ZIP download link.
+
+**Important:** For long VODs, the reaction/keyword heuristic currently
+analyses at most the first three minutes. The editor does not yet inspect
+every emotional peak in a multi-hour Twitch broadcast.

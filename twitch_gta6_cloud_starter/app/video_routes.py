@@ -106,7 +106,15 @@ def _worker(job_id, caption_text, clip_seconds, width=720, height=1280, auto_sub
             status.update({"state": "failed", "error": type(error).__name__})
             print("Video job failed:", job_id, type(error).__name__, str(error)[-500:])
         finally:
-            (folder / "source.mp4").unlink(missing_ok=True)
+            # Preserve the uploaded source when a render fails, so the user can
+            # retry with corrected settings without uploading a large VOD again.
+            if status.get("state") == "done":
+                (folder / "source.mp4").unlink(missing_ok=True)
+                status["source_retained_for_retry"] = False
+                print("Video job finished:", job_id,
+                      (status.get("result") or {}).get("duration_seconds"))
+            else:
+                status["source_retained_for_retry"] = (folder / "source.mp4").is_file()
             _write_status(folder, status)
 
 
@@ -344,6 +352,42 @@ def create_video_job(background_tasks: BackgroundTasks,
 def get_video_job(job_id: str, x_admin_token: str | None = Header(default=None)):
     _authorize(x_admin_token)
     return _read_status(job_id)
+
+
+@router.post("/jobs/{job_id}/retry", status_code=202)
+def retry_failed_video_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    auto_subtitles: bool | None = Form(None),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Retry a previously failed job using the retained original source file."""
+    _authorize(x_admin_token)
+    with _render_lock:
+        status = _read_status(job_id)
+        source = _job_dir(job_id) / "source.mp4"
+        if status.get("state") != "failed" or not source.is_file():
+            raise HTTPException(409, "Failed video source is not available for retry")
+        if auto_subtitles is None:
+            auto_subtitles = bool(status.get("auto_subtitles_requested", False))
+        if auto_subtitles and not openai_auth_status()["configured"]:
+            raise HTTPException(503, "OpenAI transcription is not configured")
+        status["state"] = "queued"
+        status.pop("error", None)
+        status["auto_subtitles_requested"] = auto_subtitles
+        status["publication_status"] = "not_ready"
+        _write_status(_job_dir(job_id), status)
+    background_tasks.add_task(
+        _worker,
+        job_id,
+        "",
+        int(status.get("requested_duration_seconds", 65)),
+        auto_subtitles=auto_subtitles,
+        music_enabled=bool(status.get("music_original_generated", True)),
+        hook_text=str(status.get("hook_text") or "GTA VI | BIG REACTION"),
+    )
+    return {"job_id": job_id, "state": "queued",
+            "message": "Retry started without re-uploading the source file"}
 
 
 @router.get("/jobs/{job_id}/download")

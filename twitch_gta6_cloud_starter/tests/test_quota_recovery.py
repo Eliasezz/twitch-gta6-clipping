@@ -11,6 +11,18 @@ from app import captions, video_pipeline, video_routes, large_upload
 
 
 class QuotaFallbackTests(unittest.TestCase):
+    def test_hook_only_has_no_division_by_zero_or_fake_words(self):
+        with tempfile.TemporaryDirectory() as root:
+            out=Path(root) / "hook-only.ass"
+            created=video_pipeline.make_ass(
+                "", 65, out, width=540, height=960,
+                timed_words=None, hook_text="GTA VI | REACTION"
+            )
+            self.assertTrue(created)
+            content=out.read_text(encoding="utf-8")
+            self.assertIn("GTA VI | REACTION", content)
+            self.assertEqual(content.count("Dialogue: 0,"),1)
+
     def test_quota_error_outputs_real_mp4_without_fabricated_subtitles(self):
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
             self.skipTest("FFmpeg not installed on runner")
@@ -72,6 +84,27 @@ class QuotaFallbackTests(unittest.TestCase):
             self.assertTrue(state["auto_recovery_attempted_at"])
             second=video_routes.recover_failed_video_jobs_on_startup()
             self.assertEqual(second,[])
+
+    def test_revision_two_can_retry_previous_zero_division_once(self):
+        job="05995e36-14dd-46b4-913f-0c2d1a0a8e62"
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            video_routes, "VIDEO_DIR", Path(root)
+        ), patch.dict(os.environ, {
+            "VIDEO_RECOVER_FAILED_JOB_IDS":job
+        }), patch("app.video_routes.threading.Thread") as thread:
+            folder=video_routes._job_dir(job)
+            (folder / "source.mp4").parent.mkdir(parents=True, exist_ok=True)
+            (folder / "source.mp4").write_bytes(b"retained original")
+            video_routes._write_status(folder,{
+                "job_id":job,"state":"failed","authorized":True,
+                "error":"ZeroDivisionError",
+                "auto_recovery_attempted_at":"2026-11-18T21:45:09+00:00",
+                "requested_duration_seconds":65,
+            })
+            self.assertEqual(video_routes.recover_failed_video_jobs_on_startup(),[job])
+            self.assertEqual(video_routes._read_status(job)["auto_recovery_revision"],"hook-only-v2")
+            self.assertEqual(video_routes.recover_failed_video_jobs_on_startup(),[])
+            self.assertEqual(thread.call_count,1)
 
     def test_one_click_page_can_resume_and_export_mp4(self):
         html=large_upload.uploader_page()

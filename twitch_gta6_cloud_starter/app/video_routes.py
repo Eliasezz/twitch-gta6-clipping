@@ -235,7 +235,9 @@ def video_ready():
         "auto_speech_transcription": bool(os.getenv("OPENAI_API_KEY", "").strip()),
         "transcription_provider": "openai_whisper_1_optional",
         "transcription_requires_api_key": True,
-        "automatic_social_publishing": False,
+        "automatic_social_publishing": __import__(
+            "app.autopilot", fromlist=["readiness"]
+        ).readiness()["ready_for_automatic_publishing"],
         "original_instrumental_music_supported": True,
         "default_music_for_uploaded_clips": True,
         "recommended_tiktok_duration_seconds": 65,

@@ -2,6 +2,7 @@
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 
@@ -73,7 +74,15 @@ def export_bundle(job_id, job_dir, status):
                 + instructions
             )
         dirname = "GTA_VI_" + job_id[:8] + "/"
-        temp_zip = archive.with_suffix(".zip.tmp")
+        # Concurrent /export and /export-link requests previously used
+        # the same temp filename and raced during os.replace(), causing
+        # FileNotFoundError HTTP 500 even though the MP4 was finished.
+        # One temporary filename per request makes both atomic and safe.
+        with tempfile.NamedTemporaryFile(
+            prefix="publish-", suffix=".zip.tmp", dir=folder,
+            delete=False
+        ) as temporary:
+            temp_zip = Path(temporary.name)
         try:
             with ZipFile(temp_zip, "w", allowZip64=True) as z:
                 z.write(mp4, dirname + "montage_9x16.mp4", compress_type=ZIP_STORED)

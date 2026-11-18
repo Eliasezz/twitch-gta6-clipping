@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -37,6 +38,41 @@ class ExportTests(unittest.TestCase):
                 self.assertTrue(any(n.endswith("/INSTRUCTIONS_FR.txt") for n in names))
                 meta = json.loads(z.read(next(n for n in names if n.endswith("/publication.json"))))
                 self.assertTrue(meta["ready"])
+
+    def test_concurrent_export_and_export_link_do_not_race(self):
+        # Regression for production job 286ae47f-9d6b-43d3-9b8d-06d63ca79245:
+        # simultaneous GET /export and POST /export-link used the same
+        # ready-to-publish.zip.tmp path, generating an HTTP 500.
+        job_id = "286ae47f-9d6b-43d3-9b8d-06d63ca79245"
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            video_routes, "VIDEO_DIR", Path(tmp)
+        ), patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "private-test-token"}), patch(
+            "app.video_exports.shutil.which", return_value=None
+        ):
+            folder = video_routes._job_dir(job_id)
+            video_routes._write_status(folder, {
+                "job_id": job_id, "state": "done",
+                "authorized": True, "original_filename": "user-video.mp4",
+            })
+            (folder / "vertical.mp4").write_bytes(b"actual-source-content" * 100000)
+            def export_once(index):
+                if index % 2:
+                    return video_routes.create_export_link(
+                        job_id, x_admin_token="private-test-token"
+                    )["url"]
+                response = video_routes.export_private(
+                    job_id, x_admin_token="private-test-token"
+                )
+                return str(response.path)
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                outputs = list(executor.map(export_once, range(16)))
+            self.assertEqual(len(outputs), 16)
+            with ZipFile(folder / "ready-to-publish.zip") as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertTrue(any(
+                    name.endswith("/montage_9x16.mp4") for name in archive.namelist()
+                ))
+            self.assertEqual(list(folder.glob("publish-*.zip.tmp")), [])
 
     def test_demo_package_is_explicitly_non_publishable(self):
         with tempfile.TemporaryDirectory() as tmp:

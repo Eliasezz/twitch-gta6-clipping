@@ -253,7 +253,7 @@ def create_video_job(background_tasks: BackgroundTasks,
                      video: UploadFile = File(...),
                      authorized: bool = Form(False),
                      caption_text: str = Form(""),
-                     auto_subtitles: bool = Form(False),
+                     auto_subtitles: bool | None = Form(None),
                      music_enabled: bool = Form(True),
                      hook_text: str = Form("GTA VI | BIG REACTION"),
                      clip_seconds: int = Form(65),
@@ -263,7 +263,12 @@ def create_video_job(background_tasks: BackgroundTasks,
         raise HTTPException(403, "Confirm you own this media or have explicit reuse permission")
     if clip_seconds < 3 or clip_seconds > 90:
         raise HTTPException(422, "clip_seconds must be 3 to 90")
-    if auto_subtitles and not os.getenv("OPENAI_API_KEY", "").strip():
+    # If omitted from Swagger, auto-select transcription whenever a platform
+    # key is configured. Explicit false still avoids any paid transcription.
+    has_speech_key = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    if auto_subtitles is None:
+        auto_subtitles = has_speech_key
+    if auto_subtitles and not has_speech_key:
         raise HTTPException(503, "Add OPENAI_API_KEY in Render before using auto_subtitles")
     if len(hook_text) > 80:
         raise HTTPException(422, "hook_text must contain 80 characters or fewer")

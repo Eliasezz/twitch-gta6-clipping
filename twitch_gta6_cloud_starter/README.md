@@ -440,3 +440,37 @@ watch GET /video/jobs/{job_id} for state=done and the ZIP download link.
 **Important:** For long VODs, the reaction/keyword heuristic currently
 analyses at most the first three minutes. The editor does not yet inspect
 every emotional peak in a multi-hour Twitch broadcast.
+
+
+## When OpenAI transcription has no remaining API quota
+
+If a real video upload previously failed with `CaptionError` and server logs
+mention `OpenAI quota or transcription rate limit exceeded`, the source
+video is still stored after the failure (until cleanup). The authorized
+existing job can be resumed in `/video/uploader` by pasting its `job_id` and
+`POLL_ADMIN_TOKEN`, then clicking **Vérifier ce job_id**. The page will
+retry the failed edit without a new upload, or show the already finished MP4.
+
+New edit behavior: an OpenAI audio `CaptionError` no longer prevents
+rendering the real MP4. The video retains its original sound, procedural
+original backing music, framing/zoom and a brief on-screen title. The job
+returns `caption_mode=not_available` and a `transcription_warning`
+rather than inventing subtitles or claiming that speech was recognized.
+The user can download a complete ZIP with the original 65s edited video
+and TikTok/YouTube texts or download MP4 alone.
+
+One-time recovery on service startup is opt-in with the non-secret Render env
+variable `VIDEO_RECOVER_FAILED_JOB_IDS` (comma-separated IDs), intended to
+retry only user-requested, previously failed `CaptionError` jobs that still
+retain their original source. It records `auto_recovery_attempted_at` to
+avoid repeating after deploys, and cannot publish anything automatically.
+Use it only for jobs specifically authorized for retry.
+
+The 429 response is an **OpenAI Platform billing/rate-limit issue**, not
+an expired Render admin token. Check the relevant OpenAI project's billing,
+credit balance and API limits separately. ChatGPT subscriptions do not add
+API transcription credits.
+
+On Render's 512 MB service, normal video edits now default to **540×960**
+vertical resolution (still suitable for short-form platforms), whereas the
+original synthetic demos use 360×640 to reduce memory and CPU load.

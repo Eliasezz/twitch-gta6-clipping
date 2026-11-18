@@ -360,7 +360,7 @@ progress{margin-top:18px;width:100%;height:20px}
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
 <label><input id="music" type="checkbox" checked> Ajouter une musique originale discrète</label>
 <label><input id="rights" type="checkbox"> Je possède les droits ou l'autorisation de réutiliser cette vidéo</label>
-<button id="send">Envoyer et monter la vidéo</button>
+<button id="send">Tout exécuter : importer → monter → télécharger</button>
 <progress id="progress" max="100" value="0" hidden></progress>
 <div id="status" role="status" aria-live="polite">Aucune vidéo envoyée.</div>
 <section id="jobPanel" hidden aria-label="Identifiant de montage">
@@ -456,14 +456,33 @@ progress{margin-top:18px;width:100%;height:20px}
    for(let count=0;count<180;count++){
      const state=await api('/video/jobs/'+job);
      show('Job : '+job+'\nStatut : '+state.state+'\n'+
-       (state.result?('Durée : '+state.result.duration_seconds+' secondes\nSous-titres : '+state.result.caption_mode):''));
+       (state.result?('Durée : '+state.result.duration_seconds+' secondes\nSous-titres : '+state.result.caption_mode):'')+
+       (state.transcription_warning?'\nAttention : transcription indisponible ('+state.transcription_warning+'); MP4 quand même produit.':''));
      if(state.state==='done'){
        const link=await api('/video/jobs/'+job+'/export-link',{method:'POST'});
        const a=document.createElement('a');
        a.href=link.url; a.target='_blank';a.rel='noopener noreferrer';
        a.textContent='Télécharger le ZIP prêt à publier';
        a.className='download';
-       result.replaceChildren(a);
+       const mp4=document.createElement('button');
+       mp4.className='secondary';
+       mp4.textContent='Obtenir un lien MP4 seul';
+       mp4.addEventListener('click',async()=>{
+         mp4.disabled=true;
+         try{
+           const file=await fetch('/video/jobs/'+job+'/download',{
+             headers:{'X-Admin-Token':el('token').value.trim()},cache:'no-store'
+           });
+           if(!file.ok)throw Error('HTTP '+file.status);
+           const blob=await file.blob(),url=URL.createObjectURL(blob);
+           const download=document.createElement('a');
+           download.href=url;download.download='GTA_VI_'+job.slice(0,8)+'.mp4';
+           document.body.appendChild(download);download.click();download.remove();
+           window.setTimeout(()=>URL.revokeObjectURL(url),30000);
+         }catch(e){show('Téléchargement MP4 : '+e.message,true)}
+         finally{mp4.disabled=false}
+       });
+       result.replaceChildren(a,mp4);
        return;
      }
      if(state.state==='failed'){
@@ -524,6 +543,13 @@ progress{margin-top:18px;width:100%;height:20px}
        );
        show('Upload déjà complet. Reprise du montage : '+job);
        await api('/video/uploads/'+job+'/finish',{method:'POST'});
+     }
+     // One click resumes a failed existing video when the source was retained;
+     // the FFmpeg fallback will still render if OpenAI exceeds its quota.
+     const latest=await api('/video/jobs/'+job);
+     if(latest.state==='failed' && latest.source_retained_for_retry){
+       show('Réparation du montage précédent sans nouvel envoi : '+job);
+       await api('/video/jobs/'+job+'/retry',{method:'POST'});
      }
      await monitor(job);
    }catch(e){show('Erreur : '+e.message,true)}

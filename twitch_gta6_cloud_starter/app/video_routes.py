@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 
 from .video_pipeline import VideoPipelineError, render_mp4, probe
 from .publishing import publication_package, sign_share_link, verify_share_link
+from .video_exports import export_bundle, ExportError
+import hashlib
 from .captions import openai_auth_status
 
 router = APIRouter(prefix="/video", tags=["video-workflow"])
@@ -249,6 +251,7 @@ def video_ready():
         "max_clip_duration_seconds": 90,
         "demo_without_upload": "/video/demo",
         "media_handoff": "review_required_before_signed_metricool_link",
+        "manual_export": "GET /video/jobs/{job_id}/export and POST /video/jobs/{job_id}/export-link",
         "production_selftest": _selftest_summary(),
     }
 
@@ -439,6 +442,86 @@ def metricool_temporary_media_transfer(job_id: str, token: str):
         raise HTTPException(404, "Edited MP4 is unavailable")
     return FileResponse(
         path, media_type="video/mp4", filename="authorized-gta6.mp4",
+        headers={"Cache-Control": "private, no-store",
+                 "X-Robots-Tag": "noindex, nofollow"},
+    )
+
+
+def _sign_export(job_id, expires):
+    """A signed download URL is independent of the admin token and expires."""
+    token = os.getenv("POLL_ADMIN_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(503, "Package downloads require a configured admin token")
+    data = f"video-export:{job_id}:{int(expires)}".encode("utf-8")
+    return hmac.new(token.encode("utf-8"), data, hashlib.sha256).hexdigest()
+
+
+@router.get("/jobs/{job_id}/export", tags=["download-to-computer"])
+def export_private(job_id: str, x_admin_token: str | None = Header(default=None)):
+    """Download complete ZIP directly via Swagger with X-Admin-Token."""
+    _authorize(x_admin_token)
+    status = _read_status(job_id)
+    try:
+        archive = export_bundle(job_id, _job_dir(job_id), status)
+    except ExportError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return FileResponse(
+        archive, filename=f"GTA_VI_{job_id[:8]}_pret_a_publier.zip",
+        media_type="application/zip",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.post("/jobs/{job_id}/export-link", tags=["download-to-computer"])
+def create_export_link(job_id: str, x_admin_token: str | None = Header(default=None)):
+    """Produce a direct browser-download URL valid for 30 minutes.
+
+    For a Mac, open the returned URL in Safari then unzip in Downloads.
+    Anyone who has the temporary link can access the package until expiry.
+    """
+    _authorize(x_admin_token)
+    status = _read_status(job_id)
+    try:
+        export_bundle(job_id, _job_dir(job_id), status)
+    except ExportError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    from datetime import timedelta
+    expires = int((datetime.now(timezone.utc) + timedelta(minutes=30)).timestamp())
+    signature = _sign_export(job_id, expires)
+    base = os.getenv(
+        "RENDER_EXTERNAL_URL", "https://twitch-gta6-clipping.onrender.com"
+    ).rstrip("/")
+    return {
+        "job_id": job_id,
+        "url": f"{base}/video/export-download/{job_id}?expires={expires}&signature={signature}",
+        "expires_unix": expires,
+        "contains": ["montage_9x16.mp4", "couverture.jpg", "tiktok_description.txt",
+                     "youtube_titre.txt", "youtube_description.txt",
+                     "publication.json", "INSTRUCTIONS_FR.txt"],
+        "publication_status": status.get("publication_status", "review_required"),
+        "demo": bool(status.get("demo")),
+        "instructions": "Open the temporary link in Safari; save the ZIP and extract it on your Mac.",
+    }
+
+
+@router.get("/export-download/{job_id}", tags=["download-to-computer"])
+def download_export_link(job_id: str, expires: int, signature: str):
+    """Anonymous access is restricted to a cryptographic 30-minute link."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    if not (
+        len(signature) == 64
+        and now < expires <= now + 1800
+        and hmac.compare_digest(signature, _sign_export(job_id, expires))
+    ):
+        raise HTTPException(403, "Expired or invalid package link")
+    status = _read_status(job_id)
+    try:
+        archive = export_bundle(job_id, _job_dir(job_id), status)
+    except ExportError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return FileResponse(
+        archive, filename=f"GTA_VI_{job_id[:8]}_pret_a_publier.zip",
+        media_type="application/zip",
         headers={"Cache-Control": "private, no-store",
                  "X-Robots-Tag": "noindex, nofollow"},
     )

@@ -304,3 +304,56 @@ necessary settings and token file exist: it does **not** prove that OpenAI
 accepted the token. A real speech transcription call must succeed before
 considering this connection validated. API usage is billed separately from
 ChatGPT subscriptions.
+
+
+## Export finished montage to your Mac (no additional cloud subscription)
+
+The existing private video upload/editor workflow now supports an export
+package with the final 9:16 MP4, cover JPEG where available, TikTok copy,
+YouTube title/description, JSON publication data, and French instructions.
+
+From Swagger `https://twitch-gta6-clipping.onrender.com/docs`:
+
+1. Use `POST /video/jobs` with an **authorized** source video at least 65
+   seconds long, `clip_seconds=65` and your private `X-Admin-Token`.
+   English auto-subtitles are selected automatically if OpenAI credentials
+   are configured. You may opt out with `auto_subtitles=false`.
+2. Check `GET /video/jobs/{job_id}` until the status is `done`.
+3. Call `POST /video/jobs/{job_id}/export-link` with the private admin token
+   and copy the returned URL. The URL is valid for **30 minutes** and is
+   a bearer capability, so keep it private.
+4. Open that link in Safari on your Mac. A ZIP archive downloads.
+   Decompress it and move the `GTA_VI_...` folder into your own
+   `Documents/Clips GTA VI/` directory.
+5. In Metricool `https://app.metricool.com/`, open **ACTU GTA VI**
+   -> Planning -> Create post, upload `montage_9x16.mp4` from your device,
+   copy the supplied text, select TikTok and YouTube, then schedule.
+   TikTok's Auto Publish toggle determines whether Metricool publishes
+   automatically or sends a notification for manual completion.
+
+Alternately, `GET /video/jobs/{job_id}/export` retrieves the same ZIP
+directly with the `X-Admin-Token` header.
+Synthetic test/demo ZIPs are **watermarked in their metadata as NOT for
+publication**. Real videos must be reviewed for copyright, licensing, audio,
+caption accuracy, and platform originality/monetization requirements.
+Files are stored on Render's 1-GB persistent disk and expire according to
+`VIDEO_KEEP_HOURS` (default 48 hours). **Download promptly:** Render cannot
+directly write a folder onto your private Mac drive.
+
+## Sending finished MP4 to Metricool
+
+The existing `GET /video/jobs/{job_id}/publication` and
+`POST /video/jobs/{job_id}/approve` produce a social draft and a short-lived
+media URL for a reviewed authorized video. This link can be submitted to
+Metricool's scheduler directly from a connected ChatGPT conversation or
+through the Metricool web interface: choose **Add image/video -> URL**.
+
+The ChatGPT Metricool connector is connected to brand `ACTU GTA VI`
+(TikTok `@lactugta6.flash` and YouTube). Its presence does NOT mean that
+the separate Render server holds a Metricool API key. The autonomous Render
+publisher still needs `METRICOOL_API_TOKEN` and creator/editor OAuth.
+For a manual handoff, you do not need those two extra server credentials:
+upload the ready MP4 to Metricool yourself, or let ChatGPT use its connected
+Metricool app once a valid video URL and scheduling instructions are available.
+
+Do not put `POLL_ADMIN_TOKEN` or your OpenAI key in a link or a social post.

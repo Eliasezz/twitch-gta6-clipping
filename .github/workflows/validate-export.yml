@@ -1,0 +1,25 @@
+name: Export ZIP smoke test
+
+on:
+  pull_request:
+    paths:
+      - "twitch_gta6_cloud_starter/**"
+      - ".github/workflows/validate-export.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: twitch_gta6_cloud_starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+      - name: Compile modules
+        run: python -m compileall -q app tests
+      - name: Test export zip, link security and existing workflow
+        run: python -m unittest discover -s tests -v

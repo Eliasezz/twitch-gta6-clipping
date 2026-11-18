@@ -119,6 +119,7 @@ def _run_once():
     folder = None
     input_clips = []
     try:
+        VIDEO_DIR.mkdir(parents=True, exist_ok=True)
         candidates, processed_today = _select_candidates()
         if processed_today >= checks["max_posts_per_day"]:
             return {"status": "daily_limit_reached"}

@@ -161,6 +161,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         destination.write_text(header + "\n".join(extras + lines) + "\n", encoding="utf-8")
         return bool(extras or lines)
     chunks = [words[i:i + 3] for i in range(0, len(words), 3)]
+    if not chunks:
+        # A hook/title alone is a legitimate overlay when voice ASR fails.
+        # Do not divide by zero; never invent dialogue or word timings.
+        destination.write_text(header + "\n".join(extras) + "\n", encoding="utf-8")
+        return bool(extras)
     allotted = max(0.4, duration - 0.2)
     max_cards = max(1, int(allotted / 0.45))
     chunks = chunks[:max_cards]

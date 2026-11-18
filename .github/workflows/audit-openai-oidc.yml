@@ -1,0 +1,37 @@
+name: Audit Render OpenAI auth mode
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/audit-openai-oidc.yml"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check configured auth mode without reading secrets
+        run: |
+          python3 - <<'PY'
+          import json
+          import urllib.request
+          base="https://twitch-gta6-clipping.onrender.com"
+          with urllib.request.urlopen(base+"/video/ready", timeout=30) as f:
+              v=json.load(f)
+          with urllib.request.urlopen(base+"/automation/status", timeout=30) as f:
+              a=json.load(f)
+          checks={
+              "server_ffmpeg_available":v.get("available"),
+              "captioning_auth_configured":v.get("auto_speech_transcription"),
+              "captioning_method":v.get("transcription_authentication_method"),
+              "oidc_provider_id_configured":v.get("transcription_oidc_provider_configured"),
+              "oidc_service_account_id_configured":v.get("transcription_oidc_service_account_configured"),
+              "oidc_token_file_available":v.get("transcription_oidc_token_file_available"),
+              "automatic_publishing_ready":a.get("ready_for_automatic_publishing"),
+              "speech_gate_ready":a.get("checks",{}).get("speech_auth_configured"),
+          }
+          print(json.dumps(checks),flush=True)
+          if checks["server_ffmpeg_available"] is not True or checks["captioning_method"] is None:
+              raise SystemExit("New video/ready fields unavailable in Render")
+          print("SUCCESS: Render auth-readiness endpoint is running",flush=True)
+          PY

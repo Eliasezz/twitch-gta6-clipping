@@ -13,12 +13,17 @@ Twitch metadata access is not blanket permission to download/re-edit/repost ever
 - SQLite deduplication
 - Enforced allowlist gate for creators who have explicitly authorized reuse
 - Cursor pagination for collection limits above 100 clips per source
+- FFmpeg vertical MP4 editing for **uploaded, authorized** source video files
+- Rough audio-activity window selection, animated zoom, colored captions and private MP4 output
+- Protected video job submission, status and download APIs
 - Backward-compatible `MAX_CLIPS_PER_POLL` / `MAX_CLIPS` configuration
 
 ## Not included / not yet connected
 - Live deployment is managed separately in Render; this repository does not create or pay for cloud resources.
 - Twitch creator authorization for clip downloads
-- Actual video download, editing, subtitle rendering or Higgsfield generation
+- Direct automatic Twitch clip download (requires a creator/editor OAuth authorization)
+- Automatic speech transcription or translation (currently uses optionally supplied caption text)
+- Higgsfield generation (not needed for the FFmpeg smoke test)
 - Metricool publishing (must only be enabled after a permitted MP4 is produced and a public media URL is available)
 
 ## Deploy
@@ -41,6 +46,9 @@ Twitch metadata access is not blanket permission to download/re-edit/repost ever
 - `KNOWN_STREAMERS` — comma-separated Twitch logins to monitor
 - `ALLOWED_BROADCASTER_IDS` — comma-separated Twitch broadcaster IDs with explicit reuse permission; empty means no clip is eligible for processing
 - `DATABASE_PATH` — default `/data/clips.sqlite3`
+- `VIDEO_STORAGE_DIR` — private source/output files, default `/data/videos`
+- `VIDEO_MAX_UPLOAD_MB` — upload size limit, default 75 MB, cap 120 MB
+- `VIDEO_KEEP_HOURS` — completed job retention, default 48 hours; download the MP4 before it expires
 
 ## Local run
 ```bash
@@ -60,3 +68,36 @@ Then open `/health`.
 
 ## Validate changes
 Run `python -m unittest discover -s tests -v` from `twitch_gta6_cloud_starter`, or review the GitHub Actions workflow. Clips marked eligible are **not** automatically licensed: you are responsible for obtaining the relevant creator permissions and complying with each platform's rules.
+
+
+## Video workflow (FFmpeg, no additional subscription)
+
+The Render native Python runtime includes `ffmpeg` and `ffprobe`. This
+project accepts **only a directly uploaded file** with explicit reuse
+confirmation, and never scrapes a Twitch/YouTube stream, evades creator
+restrictions, or auto-publishes a clip.
+
+1. In Render environment settings, configure a long random `POLL_ADMIN_TOKEN`
+   if not already set. Keep it secret. Restart/redeploy the web service if needed.
+2. Open `https://twitch-gta6-clipping.onrender.com/docs`.
+3. In **video-workflow**, expand `POST /video/jobs` -> **Try it out**.
+4. Set `X-Admin-Token` to the private token, check `authorized=true`
+   **only if you own the video or have permission**, choose an MP4/MOV/MKV and
+   optionally supply `caption_text` (English words); click Execute.
+5. Copy the returned `job_id`. Use `GET /video/jobs/{job_id}` to check the
+   `state` (queued, processing, done, failed), with the same token.
+6. Once `done`, use `GET /video/jobs/{job_id}/download` in the API docs, with
+   the same token, to retrieve your private MP4.
+
+Endpoint `GET /video/ready` checks if FFmpeg is available and whether
+`POLL_ADMIN_TOKEN` is configured, without exposing any secrets.
+
+**Current limitations:** plain caption text is split into short cards with
+**approximate timing**, not true transcription or speech alignment; the
+highlight window is an audio-activity heuristic, not a reliable AI emotional
+ranking. FFmpeg outputs a 720x1280, 24fps H.264 MP4. On the current small Render
+instance, lengthy media takes time and the disk is capped; use short source
+videos for the first test. Old completed video jobs are removed after 48 hours
+by the next successful upload request. The workflow processes only uploaded footage;
+automatic downloads require separately authorized Twitch broadcaster/editor
+OAuth and appropriate licensing. Social publishing remains disabled.

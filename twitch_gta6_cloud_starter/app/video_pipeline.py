@@ -160,16 +160,20 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
                dynamic_zoom=True, auto_subtitles=False, music_enabled=False, hook_text="",
                subtitles_required=False, chat_seconds=(), vision_enabled=False, voiceover=False, section=(0, 1), face_bottom_left=False, rhythmic=False, prepared=False):
     source, destination = Path(source), Path(destination)
-    if not source.is_file():
-        raise VideoPipelineError("Source video not found")
+    if not source.is_file() or source.is_symlink():
+        raise VideoPipelineError("Source for this job is missing or is an unsafe symlink")
+    # Final source and intermediate normalized clips must stay beneath the
+    # same private job folder as the rendered MP4. No shared caches.
+    if not source.resolve().is_relative_to(destination.parent.resolve()):
+        raise VideoPipelineError("Source media does not belong to this output job")
     if clip_seconds < 3 or clip_seconds > 90:
         raise VideoPipelineError("clip_seconds must be between 3 and 90")
-    if (width, height) not in {(360, 640), (540, 960), (720, 1280)}:
+    if (width, height) not in {(360, 640), (540, 960), (720, 1280), (1080, 1920)}:
         raise VideoPipelineError("Unsupported output format")
     info = probe(source)
     if info["duration"] > MAX_SOURCE_SECONDS:
         raise VideoPipelineError("Source exceeds 12-hour input limit")
-    if not prepared and clip_seconds >= 61 and info["duration"] < float(clip_seconds) - 0.1:
+    if not prepared and info["duration"] < float(clip_seconds) - 0.1:
         raise VideoPipelineError(
             f"Source is only {info['duration']:.1f} seconds; upload at least {clip_seconds} seconds of footage"
         )
@@ -179,7 +183,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         start, analysis = 0.0, {}
     else:
         start, analysis = select_window(source, info["duration"], duration, info["has_audio"], chat_seconds, vision_enabled, section)
-    if rhythmic and duration >= 5:
+    if (rhythmic or face_bottom_left) and duration >= 5 and not prepared:
         from .rhythm import assemble
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=destination.parent) as folder:
@@ -241,7 +245,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
             f"[camera]crop=iw*0.33:ih*0.46:0:ih-oh,scale={width}:{half},setsar=1[c];"
             "[g][c]vstack"
         ]
-    if dynamic_zoom and not face_bottom_left:
+    if dynamic_zoom and not face_bottom_left and not prepared:
         filters.append(
             f"zoompan=z='1.025+0.045*abs(sin(on/15))':"
             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps=24"
@@ -258,6 +262,10 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
     ]
     if music_enabled:
         command.extend(["-stream_loop", "-1", "-i", str(bed_path)])
+    elif not info["has_audio"]:
+        # A source with no audio still needs a valid AAC track. Silence here
+        # is not an unrelated soundtrack or substituted video footage.
+        command.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
     narration = destination.with_suffix(".voice.wav")
     voice_ready = False
     if voiceover and hook_text.strip():
@@ -276,33 +284,59 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         command.extend(["-i", str(narration)])
     command.extend(["-t", str(duration), "-map", "0:v:0"])
     tracks = []
-    if info["has_audio"]:
-        tracks.append("[0:a:0]volume=0.85[src]")
-    if music_enabled:
-        tracks.append("[1:a:0]volume=0.19[bed]")
+    if info["has_audio"] and music_enabled:
+        # Speech is foreground; the generated bed ducks under the voice.
+        tracks = [
+            "[0:a:0]highpass=f=100,acompressor=threshold=0.12:ratio=3:"
+            "attack=8:release=150[voice]",
+            "[1:a:0]volume=0.20[bed]",
+            "[bed][voice]sidechaincompress=threshold=0.04:ratio=7:"
+            "attack=20:release=250[duck]",
+            "[voice][duck]amix=inputs=2:duration=first:normalize=0[mixed]",
+        ]
+        audio_out = "[mixed]"
+    else:
+        index = "0:a:0" if info["has_audio"] else "1:a:0"
+        if music_enabled:
+            # Without original speech, use only the generated music.
+            index = "1:a:0"
+        tracks = [f"[{index}]volume=0.9[mixed]"]
+        audio_out = "[mixed]"
     if voice_ready:
-        tracks.append(f"[{2 if music_enabled else 1}:a:0]volume=1.4[narr]")
-    if tracks:
-        labels = "".join(track[track.rindex("["):] for track in tracks)
-        mix = f"{labels}amix=inputs={len(tracks)}:duration=longest:normalize=0,alimiter=limit=0.95[aout]"
-        command.extend(["-filter_complex", ";".join(tracks + [mix]), "-map", "[aout]"])
+        # Optional original text-to-speech is layered after ducking.
+        index = 2 if music_enabled else 1
+        tracks += [
+            f"[{index}:a:0]volume=1.0[voiceover]",
+            f"{audio_out}[voiceover]amix=inputs=2:duration=first:normalize=0[withvoice]",
+        ]
+        audio_out = "[withvoice]"
+    tracks.append(
+        f"{audio_out}loudnorm=I=-14:TP=-1.5:LRA=11,"
+        "alimiter=limit=0.95[aout]"
+    )
+    command.extend(["-filter_complex", ";".join(tracks), "-map", "[aout]"])
     command.extend([
         "-vf", ",".join(filters),
         "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast", "-crf", "25",
-        "-pix_fmt", "yuv420p", "-r", "24", "-c:a", "aac", "-b:a", "96k",
-        "-movflags", "+faststart", str(destination),
+        "-pix_fmt", "yuv420p", "-r", "24", "-fps_mode", "cfr",
+        "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart", "-shortest", str(destination),
     ])
     try:
         _execute(command, timeout=720 if duration >= 45 else 270)
         output_info = probe(destination)
-        if output_info["width"] != width or output_info["height"] != height:
-            raise VideoPipelineError("Output geometry failed validation")
-        if not 0.5 < output_info["duration"] <= duration + 1.5:
-            raise VideoPipelineError("Output duration failed validation")
-        if destination.stat().st_size < 1024:
-            raise VideoPipelineError("Output MP4 was unexpectedly small")
+        from .media_integrity import IntegrityError, validate_mp4
+        try:
+            verified = validate_mp4(
+                destination, width=width, height=height, seconds=duration,
+                check_boundary=True,
+            )
+        except IntegrityError as exc:
+            destination.unlink(missing_ok=True)
+            raise VideoPipelineError(str(exc)) from exc
         return {
             "file": destination.name, "size_bytes": destination.stat().st_size,
+            "output_validation": verified,
             "duration_seconds": round(output_info["duration"], 2),
             "start_seconds": start, "selection_mode": selection,
             "width": width, "height": height, "fps": 24,

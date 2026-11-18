@@ -125,6 +125,27 @@ class VideoWorkflowTests(unittest.TestCase):
             self.assertEqual(error.exception.status_code, 401)
             routes._authorize("test-secret")
 
+    def test_transcription_auto_enables_only_with_key(self):
+        for key, expected in (("", False), ("example-openai-api-key", True)):
+            with tempfile.TemporaryDirectory() as directory, patch.object(
+                routes, "VIDEO_DIR", Path(directory)
+            ), patch.object(routes, "probe", return_value={
+                "duration": 70.0, "width": 1280, "height": 720
+            }), patch.dict(os.environ, {
+                "POLL_ADMIN_TOKEN": "test-secret", "OPENAI_API_KEY": key
+            }):
+                file = UploadFile(
+                    filename="authorized.mp4", file=io.BytesIO(b"x" * 2048)
+                )
+                result = routes.create_video_job(
+                    background_tasks=BackgroundTasks(),
+                    video=file, authorized=True, caption_text="",
+                    auto_subtitles=None, clip_seconds=65,
+                    x_admin_token="test-secret"
+                )
+                state = routes._read_status(result["job_id"])
+                self.assertIs(state["auto_subtitles_requested"], expected)
+
     def test_upload_requires_explicit_permission(self):
         with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": "test-secret"}):
             file = UploadFile(filename="video.mp4", file=io.BytesIO(b"x" * 2000))

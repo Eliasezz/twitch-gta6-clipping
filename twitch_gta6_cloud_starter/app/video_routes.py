@@ -88,15 +88,28 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
     folder = _job_dir(job_id)
     with _render_lock:
         status = _read_status(job_id)
-        status["state"] = "processing"
+        status.update({"state": "running", "progress": 5,
+                       "stage": "verifying_source"})
         _write_status(folder, status)
         try:
+            from .media_integrity import validate_source, sha256_file
             source = folder / "source.mp4"
+            if source.is_symlink() or source.resolve().parent != folder.resolve():
+                raise VideoPipelineError("Job source is not isolated inside its own job folder")
+            provenance = validate_source(source)
+            status["source_provenance"] = provenance
+            status.update({"progress": 12, "stage": "selecting_highlights"})
+            _write_status(folder, status)
             output = folder / "vertical.mp4"
             chat_file = folder / "chat-seconds.json"
-            chat_seconds = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else ()
+            try:
+                chat_value = json.loads(chat_file.read_text(encoding="utf-8")) if chat_file.is_file() else []
+                chat_seconds = chat_value if isinstance(chat_value, list) else []
+            except (OSError, json.JSONDecodeError):
+                chat_seconds = []
+                status["chat_warning"] = "Chat JSON invalid: continue without chat signal"
             clips = []
-            count = status.get("clip_count", 1)
+            count = min(3, max(1, int(status.get("clip_count", 1))))
             for index in range(count):
                 if index:
                     output = folder / f"vertical-{index + 1}.mp4"
@@ -111,19 +124,27 @@ def _worker(job_id, caption_text, clip_seconds, width=540, height=960, auto_subt
                                     face_bottom_left=status.get("face_bottom_left", False),
                                     voiceover=status.get("voiceover", False),
                                     vision_enabled=status.get("vision_enabled", False))
+                clip["job_id"] = job_id
+                clip["source_sha256"] = provenance["source_sha256"]
                 clips.append(clip)
+                status.update({"progress": 12 + round(77 * (index + 1) / count),
+                               "stage": f"validated_clip_{index + 1}_of_{count}"})
+                _write_status(folder, status)
+            if sha256_file(source) != provenance["source_sha256"]:
+                raise VideoPipelineError("Source file changed during rendering; refusing untrusted output")
             result = dict(clips[0])
             if count > 1:
                 result["clips"] = clips
-            status.update({"state": "done", "result": result,
+            status.update({"state": "done", "progress": 100, "stage": "verified_and_ready",
+                           "result": result,
                            "publication_status": "review_required",
                            "transcription_warning": result.get("transcription_warning"),
                            "download_endpoint": f"/video/jobs/{job_id}/download"})
         except Exception as error:
-            # Mark all worker failures, including subprocess timeouts, as failed.
-            status.update({"state": "failed", "error": type(error).__name__})
-            if isinstance(error, CaptionError):
-                status["error_detail"] = str(error)
+            # No substitute clips, no synthetic test source on production errors.
+            status.update({"state": "failed", "stage": "failed",
+                           "error": type(error).__name__,
+                           "error_detail": str(error)[-450:]})
             print("Video job failed:", job_id, type(error).__name__, str(error)[-500:])
         finally:
             # Preserve the uploaded source when a render fails, so the user can
@@ -475,7 +496,16 @@ def download_video_job(job_id: str, x_admin_token: str | None = Header(default=N
     output = _job_dir(job_id) / "vertical.mp4"
     if status.get("state") != "done" or not output.is_file():
         raise HTTPException(409, "MP4 is not available yet")
-    return FileResponse(output, media_type="video/mp4", filename=f"gta6-highlight-{job_id[:8]}.mp4")
+    if output.is_symlink() or output.resolve().parent != _job_dir(job_id).resolve():
+        raise HTTPException(409, "Output does not belong to the requested job")
+    expected_hash = (status.get("result") or {}).get("output_validation", {}).get("output_sha256")
+    if expected_hash:
+        from .media_integrity import sha256_file
+        if sha256_file(output) != expected_hash:
+            raise HTTPException(409, "Saved MP4 changed since validation")
+    return FileResponse(output, media_type="video/mp4",
+                        filename=f"gta6-highlight-{job_id[:8]}.mp4",
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/jobs/{job_id}/publication", tags=["publishing-review"])

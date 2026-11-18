@@ -40,6 +40,16 @@ class VideoWorkflowTests(unittest.TestCase):
             self.assertFalse(output.with_suffix(".ass").exists())
             self.assertGreater(pipeline.probe(output)["duration"], 2)
 
+    def test_minute_plus_requires_sufficient_original_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "sample.mp4"
+            source.write_bytes(b"x" * 2000)
+            with patch.object(pipeline, "probe", return_value={
+                "duration": 45.0, "width": 1280, "height": 720
+            }):
+                with self.assertRaises(pipeline.VideoPipelineError):
+                    pipeline.render_mp4(source, Path(directory) / "out.mp4", clip_seconds=65)
+
     def test_admin_required(self):
         with patch.dict(os.environ, {"POLL_ADMIN_TOKEN": ""}):
             with self.assertRaises(HTTPException) as error:

@@ -16,21 +16,22 @@ Twitch metadata access is not blanket permission to download/re-edit/repost ever
 - Backward-compatible `MAX_CLIPS_PER_POLL` / `MAX_CLIPS` configuration
 
 ## Not included / not yet connected
-- Cloud deployment (requires your hosting account and its environment variables)
+- Live deployment is managed separately in Render; this repository does not create or pay for cloud resources.
 - Twitch creator authorization for clip downloads
 - Actual video download, editing, subtitle rendering or Higgsfield generation
 - Metricool publishing (must only be enabled after a permitted MP4 is produced and a public media URL is available)
 
 ## Deploy
-1. Create a private Git repository and upload this project.
-2. Create a Docker web service on your cloud provider.
-3. Set the environment variables listed below in the provider's secret/environment settings.
-4. Set the service command to `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
-5. Keep the repository private. Never commit `.env`.
+1. Connect this repository to Render. The existing web service is named `twitch-gta6-clipping`.
+2. Set the environment variables listed below using the **secret/environment settings**, never in GitHub files.
+3. Use root directory `twitch_gta6_cloud_starter`, build command `pip install -r requirements.txt` and start command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+4. Attach a persistent disk to `/data` for the SQLite database.
+5. Keep credentials private. Never commit `.env` even when the repository is public.
 
 ## Environment variables
 - `TWITCH_CLIENT_ID` — Twitch application Client ID
 - `TWITCH_CLIENT_SECRET` — Twitch application Client Secret
+- `POLL_ADMIN_TOKEN` — optional secret required for manual `POST /poll`; if absent, manual polling is disabled (scheduled polling is unaffected)
 - `POLL_INTERVAL_SECONDS` — polling interval, default 900 (15 minutes)
 - `MAX_CLIPS_PER_POLL` — max metadata records per category poll, default 100 (up to 1000)
 - `MAX_CLIPS` — legacy alias for `MAX_CLIPS_PER_POLL`
@@ -53,3 +54,9 @@ Then open `/health`.
 - Public clip metadata can be retrieved using an App Access Token.
 - Twitch's clip-download endpoint has separate requirements and may require the broadcaster/editor to have authorized your app with the appropriate scopes.
 - Creating a clip on a broadcaster's channel requires a user token with `clips:edit`; this project does not attempt that.
+
+## Manual polling (secured)
+`POST /poll` requires the `X-Admin-Token` HTTP header matching `POLL_ADMIN_TOKEN`. Do not put the token in a URL or share it. Without this variable, leave the background poller to run automatically. `/health` and `/clips` remain read-only and public.
+
+## Validate changes
+Run `python -m unittest discover -s tests -v` from `twitch_gta6_cloud_starter`, or review the GitHub Actions workflow. Clips marked eligible are **not** automatically licensed: you are responsible for obtaining the relevant creator permissions and complying with each platform's rules.

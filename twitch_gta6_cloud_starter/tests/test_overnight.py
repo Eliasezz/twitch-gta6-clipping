@@ -137,7 +137,27 @@ class OvernightEditingTests(unittest.TestCase):
         jobs = overnight.overnight_jobs(x_admin_token="private-test-token")
         self.assertEqual(jobs["jobs"][0]["job_id"], job_id)
         self.assertTrue(jobs["jobs"][0]["export_link_endpoint"].endswith("/export-link"))
-        self.assertEqual(overnight.run_once()["status"], "no_new_permissioned_clips")
+        with patch("app.main.twitch_get", return_value={"data": []}):
+            self.assertEqual(overnight.run_once()["status"], "no_new_permissioned_clips")
+
+    def test_public_replay_windows_skip_used_offsets_and_unrelated_games(self):
+        from app import replay
+        from datetime import datetime, timezone
+        self._connect()
+        video = {"id": "111", "title": "GTA VI découverte", "user_id": "456",
+                 "user_name": "Test Creator", "created_at": "2026-11-19T08:00:00Z",
+                 "duration": "1h10m3s"}
+        now = datetime(2026, 11, 19, 11, tzinfo=timezone.utc)
+        db = main.get_connection()
+        try:
+            with patch.object(main, "twitch_get", return_value={"data": [dict(video, title="GTA V"), video]}):
+                first, = replay.candidates(db, now)
+                self.assertEqual(first["vod_offset"], 4133)
+                overnight._record(first, "job1", "done")
+                second, = replay.candidates(db, now)
+                self.assertEqual(first["vod_offset"] - second["vod_offset"], 900)
+        finally:
+            db.close()
 
     def test_05_creator_attestation_is_required_and_revocable(self):
         data = twitch_connection.CreatorConsent(

@@ -4,6 +4,7 @@ Every 15-minute radar poll may process one NEW official, permissioned Twitch
 clip. No direct Twitch CDN scraping. No unlicensed VOD downloads. No media
 from other jobs. Publication is deliberately separate and manual by default.
 """
+import json
 import os
 import re
 from urllib.parse import urlsplit
@@ -58,7 +59,7 @@ def init_overnight_db():
 
 
 def _limit():
-    return min(8, max(1, int(os.getenv("AUTO_EDITS_PER_DAY", "6"))))
+    return min(96, max(1, int(os.getenv("AUTO_EDITS_PER_DAY", "96"))))
 
 
 def readiness():
@@ -77,6 +78,7 @@ def readiness():
     return {
         "ready_for_automatic_editing": all(checks.values()),
         "checks": checks,
+        "ready_for_public_replays": all(v for k, v in checks.items() if k != "twitch_editor_oauth_grant_present"),
         "creator_count": len(authorized),
         "authorized_creators": allowed_creator_details(),
         "twitch_connected_editor": connected["login"] if connected else None,
@@ -88,7 +90,8 @@ def readiness():
         "transcription_ready_to_attempt": openai_auth_status()["configured"],
         "metricool_not_required_for_editing": True,
         "publication": "manual_review_then_upload; separate Metricool API if configured",
-        "vod_full_replay": "not_implemented; official Twitch Clip downloads only",
+        "vod_full_replay": "private 60-second samples from recent public GTA VI archives of authorized creators",
+        "live_capture": "60-second public live samples from authorized creators playing GTA VI",
         "selection": "Twitch clip view count followed by actual audio/visual highlight analysis",
         "render_style": "short-form hook, 9:16 blurred background, colored real-word subtitles when ASR works",
     }
@@ -104,7 +107,7 @@ def _candidates(limit=20):
     try:
         rows = db.execute(f"""
           SELECT c.id, c.title, c.url, c.broadcaster_name, c.broadcaster_id,
-                 c.view_count, c.created_at
+                 c.view_count, c.created_at, c.video_id, c.vod_offset
           FROM clips c
           LEFT JOIN overnight_clip_jobs used ON used.clip_id=c.id
           WHERE c.broadcaster_id IN ({placeholders})
@@ -227,12 +230,12 @@ def _record(clip, job_id, state, error=None):
         db.close()
 
 
-def run_once():
+def run_once(preferred_source="clip"):
     """Run one authorized clip edit per pass and persist a downloadable ZIP."""
     from .video_routes import VIDEO_DIR, _job_dir, _write_status, _read_status, _worker
     from .video_exports import export_bundle
     checks = readiness()
-    if not checks["ready_for_automatic_editing"]:
+    if not checks["ready_for_public_replays"]:
         return {"status": "blocked", "checks": checks["checks"]}
     if not _run_lock.acquire(blocking=False):
         return {"status": "already_running"}
@@ -242,9 +245,22 @@ def run_once():
         VIDEO_DIR.mkdir(parents=True, exist_ok=True)
         if _used_today() >= _limit():
             return {"status": "daily_edit_limit_reached", "limit": _limit()}
+        from .video_routes import _cleanup_finished_jobs
+        _cleanup_finished_jobs()
         if shutil.disk_usage(VIDEO_DIR).free < 250 * 1024 * 1024:
             return {"status": "insufficient_disk_space", "minimum_free_mb": 250}
-        candidates = _requested_candidates() or _candidates()
+        from . import replay
+        candidates = _requested_candidates() if checks["ready_for_automatic_editing"] else []
+        radar = _candidates() if checks["ready_for_automatic_editing"] else []
+        if not candidates and (preferred_source != "clip" or not radar):
+            db = _db()
+            try:
+                samples = replay.candidates(db)
+                key = "video_id" if preferred_source == "replay" else "stream_id"
+                candidates = [s for s in samples if s.get(key)] or samples
+            finally:
+                db.close()
+        candidates = candidates or radar
         if not candidates:
             return {"status": "no_new_permissioned_clips"}
         clip = candidates[0]
@@ -253,12 +269,25 @@ def run_once():
         _record(clip, job_id, "downloading")
         folder.mkdir(parents=True, exist_ok=False)
         src = folder / "source.mp4"
+        is_replay = bool(clip.get("video_created_at"))
+        is_live = bool(clip.get("stream_id"))
+        origin = {key: clip.get(key) for key in ("broadcaster_name","title","video_id","vod_offset","video_created_at","stream_id","stream_started_at")}
+        if not is_replay and not clip.get("url"):
+            from .main import twitch_get
+            details = twitch_get("clips", {"id": clip["id"]}).get("data", [])
+            if details:
+                clip = dict(clip, **{k: details[0].get(k) for k in ("video_id","vod_offset","url","created_at")})
+                origin.update(video_id=clip["video_id"], vod_offset=clip["vod_offset"])
+        origin["clip_created_at"] = None if is_replay or is_live else clip.get("created_at")
+        origin["url"] = clip.get("url") or "https://clips.twitch.tv/"+clip["id"]
+        origin["collected_at"] = datetime.now(timezone.utc).isoformat()
         _write_status(folder, {
+            "origin": origin, "vision_enabled": openai_auth_status()["configured"],
             "job_id": job_id, "state": "queued",
             "stage": "downloading_official_twitch_clip", "progress": 0,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "authorized": True, "autogenerated": True,
-            "source_type": "official_twitch_clip",
+            "source_type": "authorized_live" if is_live else ("public_authorized_replay" if is_replay else "official_twitch_clip"),
             "source_clip_ids": [clip["id"]],
             "broadcaster_id": clip["broadcaster_id"],
             "broadcaster_name": clip["broadcaster_name"],
@@ -271,8 +300,11 @@ def run_once():
             "requested_duration_seconds": 30,
             "publication_status": "review_required",
         })
-        twitch_media.download_clip(clip["broadcaster_id"], clip["id"], src,
-                                   max_bytes=90 * 1024 * 1024)
+        if is_replay or is_live:
+            replay.download(clip, src)
+        else:
+            twitch_media.download_clip(clip["broadcaster_id"], clip["id"], src,
+                                       max_bytes=90 * 1024 * 1024)
         length = probe(src)["duration"]
         if length < 20.1:
             raise ValueError("Twitch clip shorter than 20 seconds")
@@ -286,12 +318,30 @@ def run_once():
                 auto_subtitles=openai_auth_status()["configured"],
                 music_enabled=True, hook_text="GTA VI | BIG REACTION")
         state = _read_status(job_id)
+        if state.get("state") == "failed" and src.is_file() and state.get("error") in {"VideoPipelineError","CalledProcessError"}:
+            state.update(rhythmic=False, vision_enabled=False, recovery="continuous_original_audio")
+            _write_status(folder, state)
+            _worker(job_id, "", seconds, width=540, height=960,
+                    auto_subtitles=openai_auth_status()["configured"], music_enabled=False)
+            state = _read_status(job_id)
         if state.get("state") != "done":
             _record(clip, job_id, "failed", str(state.get("error") or "render failed"))
             return {"status": "editing_failed", "job_id": job_id,
                     "error": state.get("error_detail") or state.get("error")}
         archive = export_bundle(job_id, folder, state)
         _record(clip, job_id, "done")
+        from .publishing import publication_package
+        report = publication_package(job_id, state)
+        print("Twitch export report:", json.dumps({"job_id": job_id, "origin": origin,
+              "description": report["tiktok_caption"], "shots": state["result"].get("source_shots"),
+              "start_seconds": state["result"].get("start_seconds"),
+              "caption_mode": state["result"].get("caption_mode"),
+              "vision_used": bool((state["result"].get("highlight_analysis") or {}).get("vision")),
+              "vision_warning": (state["result"].get("highlight_analysis") or {}).get("vision_warning"),
+              "caption_warning": state["result"].get("transcription_warning"),
+              "source_type": state["source_type"],
+              "duration_seconds": state["result"].get("duration_seconds"),
+              "recovery": state.get("recovery")}, ensure_ascii=True), flush=True)
         print("Overnight Twitch clip ready:", job_id, clip["id"], seconds, archive.stat().st_size)
         return {"status": "ready_to_download", "job_id": job_id,
                 "duration_seconds": seconds,
@@ -361,7 +411,7 @@ def overnight_run(background_tasks: BackgroundTasks,
                   x_admin_token: str | None = Header(default=None)):
     from .video_routes import _authorize
     _authorize(x_admin_token)
-    if not readiness()["ready_for_automatic_editing"]:
+    if not readiness()["ready_for_public_replays"]:
         raise HTTPException(409, "Configure authorized creators and Twitch editor OAuth")
     background_tasks.add_task(run_once)
     return {"status": "queued", "action": "edit_one_authorized_twitch_clip"}
@@ -369,5 +419,6 @@ def overnight_run(background_tasks: BackgroundTasks,
 
 def run_overnight_after_poll():
     if os.getenv("AUTO_PIPELINE_ENABLED", "0") == "1":
-        return run_once()
+        slot = int(datetime.now(timezone.utc).timestamp()) // 900
+        return run_once(("clip", "live", "replay")[slot % 3])
     return {"status": "disabled"}

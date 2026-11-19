@@ -444,7 +444,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 <label><input type="checkbox" id="creatorRights"> Je confirme disposer de l'autorisation de réutiliser les vidéos de ce créateur.</label>
 <p id="robotStatus" class="muted" role="status">Vérifie l'état du robot pour voir les autorisations restantes.</p>
 <div id="robotClips"></div>
-<p class="muted">Aucun clip de quelqu'un d'autre n'est téléchargé sans permission déclarée et sans accès OAuth Twitch valide. Le système ne télécharge pas encore les VOD entières et ne publie pas automatiquement sans Metricool API.</p>
+<p class="muted">Aucun clip de quelqu'un d'autre n'est téléchargé sans permission déclarée et sans accès OAuth Twitch valide. Le robot peut prélever 60 secondes dans les replays publics GTA VI récents des créateurs autorisés et ne publie pas automatiquement sans Metricool API.</p>
 </section></main>
 <script>
 (function(){
@@ -563,6 +563,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
    setRobot(
      'Montage nocturne : '+(data.ready_for_automatic_editing?'AUTORISÉ':'EN ATTENTE')+
      '\n'+gates.join('\n')+
+     '\nCapture de lives et replays publics : '+(data.ready_for_public_replays?'active':'en attente d’une chaîne autorisée')+
      '\nClips possibles : '+data.potential_next_clips+
      ' | Montages aujourd’hui : '+data.edits_today+'/'+data.edits_per_day_limit+
      '\nLe robot travaille sans navigateur ouvert.'

@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 requests==2.32.3
 python-multipart==0.0.20
 openai==3.54.0
+yt-dlp==2026.10.26

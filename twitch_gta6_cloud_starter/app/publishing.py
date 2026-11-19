@@ -3,6 +3,7 @@
 This module NEVER publishes to any platform. A signed link only permits a
 temporary download of an already-licensed, editor-approved clip.
 """
+import re
 import hashlib
 import hmac
 import os
@@ -19,7 +20,16 @@ def publication_package(job_id, job_state):
         f"GTA VI gaming highlight. Edited from authorized source: {source}. "
         "Comment your favorite moment! #GTAVI #GTA6 #Gaming #Shorts"
     )
+    origin = job_state.get("origin") or {}
+    if origin:
+        creator = origin.get("broadcaster_name") or "Twitch"
+        vision = (job_state.get("result", {}).get("highlight_analysis") or {}).get("vision") or {}
+        evidence = vision.get("reason") or ("Extrait du stream « " + str(origin.get("title") or "GTA VI") + " ».")
+        tag = re.sub(r"[^A-Za-z0-9_]", "", creator)
+        description = f"{creator} sur GTA VI. {evidence} #GTA6 #GTAVI #TwitchClips" + (" #"+tag if tag else "")
     return {
+        "origin": origin,
+        "source_shots": (job_state.get("result") or {}).get("source_shots", []),
         "job_id": job_id,
         "title": title,
         "tiktok_caption": description[:2000],

@@ -155,6 +155,7 @@ def init_database():
             "broadcaster_name": "TEXT",
             "creator_name": "TEXT",
             "video_id": "TEXT",
+            "vod_offset": "INTEGER",
             "game_id": "TEXT",
             "language": "TEXT",
             "title": "TEXT",
@@ -539,6 +540,7 @@ def save_clips(clips: list[dict[str, Any]], known_ids: set[str]):
                 "broadcaster_name": clip.get("broadcaster_name"),
                 "creator_name": clip.get("creator_name"),
                 "video_id": clip.get("video_id"),
+                "vod_offset": clip.get("vod_offset"),
                 "game_id": clip.get("game_id"),
                 "language": clip.get("language"),
                 "title": clip.get("title"),
@@ -677,7 +679,8 @@ def poll_once():
 
         known_clips = []
 
-        for broadcaster_id in known_ids:
+        from .twitch_connection import allowed_creators
+        for broadcaster_id in known_ids | allowed_creators():
 
             try:
                 streamer_clips = collect_known_streamer_clips(
@@ -767,19 +770,22 @@ def poll_loop():
 
     time.sleep(10)
 
+    editor = None
     while True:
-
+        started = time.monotonic()
         try:
             poll_once()
             # Conditional, rights-gated autopilot; no downloads or posts
             # unless creator OAuth + Metricool API credentials are present.
             from .autopilot import run_automatic_after_poll
-            run_automatic_after_poll()
+            if editor is None or not editor.is_alive():
+                editor = threading.Thread(target=run_automatic_after_poll, daemon=True)
+                editor.start()
 
         except Exception as error:
             print("Erreur système automatique :", error)
 
-        time.sleep(POLL_INTERVAL)
+        time.sleep(max(1, POLL_INTERVAL - (time.monotonic() - started)))
 
 
 # ============================================================

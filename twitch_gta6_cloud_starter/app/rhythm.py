@@ -10,7 +10,7 @@ def active_ranges(source, start, length, audio):
         return [(start, start + length)]
     proc = subprocess.run([
         "ffmpeg", "-nostdin", "-hide_banner", "-ss", str(start), "-i", str(source),
-        "-t", str(length), "-map", "0:a:0", "-af", "silencedetect=n=-38dB:d=0.45",
+        "-t", str(length), "-map", "0:a:0", "-af", "silencedetect=n=-38dB:d=0.30",
         "-f", "null", "-"
     ], capture_output=True, text=True, check=True, timeout=90)
     cursor, ranges = 0., []
@@ -18,48 +18,55 @@ def active_ranges(source, start, length, audio):
         t = min(length, max(0., float(timestamp)))
         if kind == "start":
             if t - cursor >= .12:
-                ranges.append((start + cursor, start + t))
+                ranges.append((start + max(0, cursor-.05), start + min(length, t+.05)))
             cursor = length
         else:
             cursor = t
     if length - cursor >= .12:
-        ranges.append((start + cursor, start + length))
+        ranges.append((start + max(0, cursor-.05), start + length))
     return ranges
 
 
 def plan(ranges, event, duration):
     from .video_pipeline import VideoPipelineError
-    if not ranges:
-        raise VideoPipelineError("Aucun passage audible dans la fenêtre sélectionnée.")
-    peak = min(ranges, key=lambda r: max(r[0]-event, event-r[1], 0))
-    hook = max(peak[0], min(event-.3, peak[1]-1.25))
-    end = min(peak[1], hook+1.25)
-    ordered = [(hook, end)]
-    for a,b in ranges:
-        if (a,b) == peak:
-            ordered.extend([(a,hook),(end,b)])
-        else:
-            ordered.append((a,b))
-    shots = []
-    remaining = duration
-    for a,b in ordered:
-        length = min(b-a, remaining)
-        if length < .10:
-            continue
-        pieces = max(1, math.ceil(length/2.9))
-        shots.extend((a+i*length/pieces,length/pieces) for i in range(pieces))
-        remaining -= length
-        if remaining < .10:
-            break
-    if sum(t for _,t in shots) < 19.96:
+    fps = 24
+    spans = [(math.ceil(a*fps), math.floor(b*fps)) for a,b in ranges
+             if math.floor(b*fps) > math.ceil(a*fps)]
+    total = sum(b-a for a,b in spans)
+    count = min(total, round(duration*fps))
+    if count < 20*fps:
         raise VideoPipelineError("Moins de 20 secondes exploitables après suppression des silences.")
+    # Work in active frames so the tail can land exactly one frame before
+    # the opening, without duplicating the reaction or cutting into a silence.
+    choices = []
+    cursor = 0
+    for a,b in spans:
+        if b-a >= 3:
+            frame = max(a+1, min(b-2, round((event-.3)*fps)))
+            choices.append((abs(frame-event*fps), cursor+frame-a))
+        cursor += b-a
+    if not choices:
+        raise VideoPipelineError("Passages trop fragmentés pour une boucle.")
+    pivot = min(choices)[1]
+    left = max(0, min(total-count, pivot-count//3))
+    shots = []
+    for lo,hi in ((pivot,left+count),(left,pivot)):
+        cursor = 0
+        for a,b in spans:
+            first = a + max(0,lo-cursor)
+            last = min(b,a+hi-cursor)
+            while first < last:
+                frames = min(last-first, 30 if not shots else 68)
+                shots.append((first/fps, frames/fps))
+                first += frames
+            cursor += b-a
     return shots
 
 
 def assemble(source, folder, shots, face, width, height):
     files = []
     for index, (offset, length) in enumerate(shots):
-        zoom = (1.12, 1., 1.05, 1.10)[index % 4]
+        zoom = 1.12 if index == len(shots)-1 else (1.12, 1., 1.05, 1.10)[index % 4]
         if face:
             game_height, cam_height = height//2, height*3//8
             filters = (
@@ -75,7 +82,7 @@ def assemble(source, folder, shots, face, width, height):
         else:
             filters = (f"crop=iw/{zoom}:ih/{zoom},scale={width}:{height}:force_original_aspect_ratio=increase,"
                        f"crop={width}:{height}")
-        out = Path(folder) / f"shot-{index}.mp4"
+        out = Path(folder) / f"shot-{index}.mkv"
         # Split/overlay requires filter_complex; -vf does not support
         # multi-chain graphs. Inputs remain exclusively source job media.
         from .video_pipeline import probe
@@ -99,14 +106,14 @@ def assemble(source, folder, shots, face, width, height):
             "-map", "0:a:0" if has_audio else "1:a:0",
             "-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p",
             "-r", "24", "-fps_mode", "cfr", "-preset", "ultrafast", "-crf", "22",
-            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest",
+            "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-shortest",
             str(out),
         ]
         subprocess.run(command, check=True, capture_output=True, timeout=180)
         files.append(out)
     listing = Path(folder) / "shots.txt"
     listing.write_text("".join(f"file '{p.name}'\n" for p in files))
-    result = Path(folder) / "sequence.mp4"
+    result = Path(folder) / "sequence.mkv"
     subprocess.run(["ffmpeg","-v","error","-nostdin","-y","-f","concat","-safe","0",
                     "-i",str(listing),"-c","copy",str(result)],check=True,capture_output=True,timeout=90)
     from .video_pipeline import probe

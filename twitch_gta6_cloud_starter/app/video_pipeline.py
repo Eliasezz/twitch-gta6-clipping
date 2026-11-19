@@ -86,7 +86,7 @@ ScaledBorderAndShadow: yes
 WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hype,DejaVu Sans,{round(width*.072)},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,2,{round(width*.10)},{round(width*.17)},{round(height*.24)},1
+Style: Hype,DejaVu Sans,{round(width*.072)},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,5,{round(width*.10)},{round(width*.10)},0,1
 Style: Hook,DejaVu Sans,{round(width*.06)},&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,3,1,8,45,45,140,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -96,11 +96,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         hook = _ass_escape(" ".join(str(hook_text).split()[:7]).upper())[:80]
         if hook:
             extras.append(
-                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 1.5))},Hook,,0,0,0,,{hook}"
+                f"Dialogue: 0,0:00:00.00,{_ass_time(min(duration, 2.0))},Hook,,0,0,0,,{hook}"
             )
     if timed_words:
-        # Each event starts/ends at the ASR word boundaries. Show 3-word
-        # context and highlight the currently spoken English word.
+        # Display each spoken word at its ASR boundaries.
         validated = []
         for entry in timed_words[:600]:
             try:
@@ -180,6 +179,9 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         window_start = max(section_begin, min(start, section_end-duration*2))
         ranges = active_ranges(source, window_start, min(section_end-window_start, duration*2), info["has_audio"])
         shots = plan(ranges, analysis["event_seconds"], duration)
+        if hook_text == "GTA VI | BIG REACTION":
+            hook_text = (analysis.get("vision") or {}).get("hook") or "DID YOU CATCH THAT?"
+        duration = round(sum(length for _, length in shots), 6)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=destination.parent) as folder:
             sequence = assemble(source, folder, shots, face_bottom_left, width, height)
@@ -290,7 +292,7 @@ def render_mp4(source, destination, *, caption_text="", clip_seconds=65, width=7
         raise VideoPipelineError("Source sans audio. Active la musique pour exporter avec une piste sonore.")
     if tracks:
         if prepared and info["has_audio"] and music_enabled:
-            tracks = ["[0:a:0]asplit=2[src][key]", "[1:a:0]volume=0.14[music]",
+            tracks = ["[0:a:0]asplit=2[src][key]", f"[1:a:0]volume=0.14,afade=t=in:d=0.04,afade=t=out:st={max(0,duration-.04)}:d=0.04[music]",
                       "[music][key]sidechaincompress=threshold=0.035:ratio=7:attack=15:release=275[bed]"]
             labels = "[src][bed]"
             inputs = 2

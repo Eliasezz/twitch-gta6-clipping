@@ -396,7 +396,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 </details><label for="clipCount">Nombre de clips</label><select id="clipCount"><option>1</option><option>2</option><option>3</option></select>
 <label><input id="faceLeft" type="checkbox" checked> Agrandir la webcam en bas à gauche sous la scène de jeu</label>
 <label for="seconds">Durée du clip (secondes)</label><input id="seconds" type="number" min="20" max="45" value="22">
-<label for="hook">Accroche · 7 mots maximum</label><input id="hook" type="text" maxlength="80" value="GTA VI | BIG REACTION">
+<label for="hook">Accroche · 7 mots maximum</label><input id="hook" type="text" maxlength="80" placeholder="Automatique · ou écris ton accroche">
 
 <label for="subtitles">Sous-titres anglais</label>
 <select id="subtitles"><option value="auto">Automatiques si OpenAI configuré</option><option value="true">Obligatoires</option><option value="false">Désactivés</option></select>
@@ -797,7 +797,7 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
      const params={
        filename:file.name,size_bytes:file.size,authorized:true,
        clip_seconds:Number(el('seconds').value),music_enabled:el('music').checked,
-       hook_text:el('hook').value,vision_enabled:el('vision').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
+       hook_text:el('hook').value.trim()||'GTA VI | BIG REACTION',vision_enabled:el('vision').checked,clip_count:Number(el('clipCount').value),face_bottom_left:el('faceLeft').checked
      };
      if(subtitles!=='auto')params.auto_subtitles=subtitles==='true';
      const chatFile=el('chat').files[0];

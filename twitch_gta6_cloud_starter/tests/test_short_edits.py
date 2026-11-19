@@ -11,6 +11,7 @@ class ShortEditTests(unittest.TestCase):
         shots = rhythm.plan([(0, 8), (14, 32)], 18, 22)
         self.assertLessEqual(shots[0][1], 1.5)
         self.assertAlmostEqual(sum(d for _, d in shots), 22)
+        self.assertAlmostEqual(sum(shots[-1]), shots[0][0])
         for start, length in shots:
             self.assertLessEqual(length, 3)
             self.assertTrue(start + length <= 8 or start >= 14)

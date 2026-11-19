@@ -246,6 +246,10 @@ def run_automation(background_tasks: BackgroundTasks,
 
 
 def run_automatic_after_poll():
-    """Called by the existing 15-minute radar thread; never duplicates work."""
-    if _bool("AUTO_PIPELINE_ENABLED"):
-        _run_once()
+    """The 15-minute radar edits permissioned clips even without Metricool.
+
+    Keep the original publishing endpoint opt-in and separate. Never skip
+    creating a downloadable MP4 solely because the Metricool API is missing.
+    """
+    from .overnight import run_overnight_after_poll
+    return run_overnight_after_poll()

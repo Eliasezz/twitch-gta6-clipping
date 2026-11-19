@@ -175,7 +175,42 @@ class OvernightEditingTests(unittest.TestCase):
         self.assertIn("/automation/twitch/callback", result["required_redirect_uri"])
         self.assertNotIn("csecret", json.dumps(result))
 
-    def test_07_existing_env_credentials_still_take_priority(self):
+    def test_07_twitch_callback_saves_only_editor_id_not_tokens(self):
+        with patch.dict(os.environ, {
+            "TWITCH_CLIENT_ID": "client1",
+            "TWITCH_CLIENT_SECRET": "secret1",
+        }):
+            response = twitch_connection.initiate_twitch_oauth(
+                x_admin_token="private-test-token"
+            )
+            from urllib.parse import urlsplit, parse_qs
+            nonce = parse_qs(urlsplit(response["authorize_url"]).query)["state"][0]
+            tokens = Mock(ok=True)
+            tokens.json.return_value = {
+                "access_token": "never-save-this-token",
+                "refresh_token": "never-save-refresh",
+                "scope": ["editor:manage:clips"],
+            }
+            identity = Mock(ok=True)
+            identity.json.return_value = {
+                "data": [{"id": "789", "login": "test_editor"}]
+            }
+            with patch("app.twitch_connection.requests.post", return_value=tokens), patch(
+                "app.twitch_connection.requests.get", return_value=identity
+            ):
+                html = twitch_connection.twitch_oauth_callback(
+                    code="one-use-code", state=nonce,
+                )
+            self.assertIn("Connexion Twitch enregistrée", html.body.decode())
+            self.assertEqual(twitch_connection.editor_connection()["id"], "789")
+            with self.assertRaises(HTTPException) as replay:
+                twitch_connection.twitch_oauth_callback(code="again", state=nonce)
+            self.assertEqual(replay.exception.status_code, 403)
+            db_data = (self.root / "clips.sqlite3").read_bytes()
+            self.assertNotIn(b"never-save-this-token", db_data)
+            self.assertNotIn(b"never-save-refresh", db_data)
+
+    def test_08_existing_env_credentials_still_take_priority(self):
         with patch.dict(os.environ, {
             "TWITCH_EDITOR_ID": "100",
             "TWITCH_EDITOR_ACCESS_TOKEN": "token",
@@ -184,7 +219,7 @@ class OvernightEditingTests(unittest.TestCase):
             self.assertEqual(twitch_media._editor_settings(),
                              ("100", "token", "app"))
 
-    def test_08_twitch_app_access_after_oauth_grant(self):
+    def test_09_twitch_app_access_after_oauth_grant(self):
         self._connect()
         with patch.dict(os.environ, {
             "TWITCH_CLIENT_ID": "some-app-id",

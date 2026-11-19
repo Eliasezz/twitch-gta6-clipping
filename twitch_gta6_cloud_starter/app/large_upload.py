@@ -421,6 +421,25 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 </details>
 <div id="result"></div>
 <p class="muted">Aucun mot de passe n'est enregistré dans le navigateur. Les vidéos de test ne sont pas publiées automatiquement. Les fichiers terminés sont temporaires (48 h par défaut).</p>
+</section>
+<section class="card" style="margin-top:18px">
+<h2>Robot Twitch · Clips automatiques pendant la nuit</h2>
+<p>Le radar recherche GTA VI toutes les 15 minutes. Pour transformer les clips sans import, connecte un compte Twitch éditeur, puis ajoute uniquement les créateurs qui t'ont autorisé à réutiliser leurs vidéos. Les montages sont enregistrés ici, même sans Metricool.</p>
+<p class="muted"><b>Étape obligatoire :</b> dans <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener noreferrer">Twitch Developer Console</a>, ajoute l'adresse de redirection <code>https://twitch-gta6-clipping.onrender.com/automation/twitch/callback</code> à ton application Twitch.</p>
+<div class="controls">
+<button id="connectTwitch" type="button" class="secondary">Connecter mon compte Twitch éditeur</button>
+<button id="checkRobot" type="button" class="secondary">Voir l'état du robot</button>
+<button id="listRobotJobs" type="button" class="secondary">Mes clips Twitch montés</button>
+</div>
+<label for="creatorLogin">Créateur Twitch dont tu as les droits de réutilisation</label>
+<div class="controls">
+<input id="creatorLogin" type="text" placeholder="identifiant Twitch du créateur" autocomplete="off">
+<button id="addCreator" type="button" class="secondary">Ajouter ce créateur</button>
+</div>
+<label><input type="checkbox" id="creatorRights"> Je confirme disposer de l'autorisation de réutiliser les vidéos de ce créateur.</label>
+<p id="robotStatus" class="muted" role="status">Vérifie l'état du robot pour voir les autorisations restantes.</p>
+<div id="robotClips"></div>
+<p class="muted">Aucun clip de quelqu'un d'autre n'est téléchargé sans permission déclarée et sans accès OAuth Twitch valide. Le système ne télécharge pas encore les VOD entières et ne publie pas automatiquement sans Metricool API.</p>
 </section></main>
 <script>
 (function(){
@@ -474,6 +493,73 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
  });
  el('copyJob').addEventListener('click',()=>{
    copyButton(el('copyJob'),jobField.value,'Copier le job_id');
+ });
+ // All sensitive controls reuse the token that the user pasted; no token
+ // is fetched from the server or written to browser storage.
+ const robotStatus=el('robotStatus'), robotClips=el('robotClips');
+ function setRobot(message,error){
+   robotStatus.textContent=message;
+   robotStatus.className=error?'err':'muted';
+ }
+ el('connectTwitch').addEventListener('click',async()=>{
+   try{
+     const response=await api('/automation/twitch/connect',{method:'POST'});
+     setRobot('Ouverture de la connexion Twitch officielle…');
+     window.location.assign(response.authorize_url);
+   }catch(e){setRobot('Connexion Twitch : '+e.message,true)}
+ });
+ el('addCreator').addEventListener('click',async()=>{
+   const login=el('creatorLogin').value.trim();
+   if(!el('creatorRights').checked){setRobot('Confirme d’abord les droits de réutilisation.',true);return}
+   try{
+     const result=await api('/automation/twitch/creators',{
+       method:'POST',
+       headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({login:login,reuse_permission_confirmed:true})
+     });
+     setRobot('Créateur ajouté : '+result.creator+'. Twitch doit également accorder l’accès éditeur.');
+     await refreshRobot();
+   }catch(e){setRobot('Ajout créateur : '+e.message,true)}
+ });
+ async function refreshRobot(){
+   const data=await api('/automation/overnight/status');
+   const gates=Object.entries(data.checks||{}).map(([name,ok])=>
+     (ok?'✓ ':'✗ ')+name.replaceAll('_',' '));
+   setRobot(
+     'Montage nocturne : '+(data.ready_for_automatic_editing?'AUTORISÉ':'EN ATTENTE')+
+     '\n'+gates.join('\n')+
+     '\nClips possibles : '+data.potential_next_clips+
+     ' | Montages aujourd’hui : '+data.edits_today+'/'+data.edits_per_day_limit+
+     '\nLe robot travaille sans navigateur ouvert.'
+   );
+   robotStatus.style.whiteSpace='pre-line';
+ }
+ el('checkRobot').addEventListener('click',async()=>{
+   try{await refreshRobot()}catch(e){setRobot('État : '+e.message,true)}
+ });
+ el('listRobotJobs').addEventListener('click',async()=>{
+   try{
+     const data=await api('/automation/overnight/jobs');
+     robotClips.replaceChildren();
+     if(!data.jobs.length){setRobot('Aucun clip Twitch automatique terminé pour le moment.');return}
+     for(const item of data.jobs){
+       const line=document.createElement('div');
+       line.style.marginTop='12px';
+       line.style.padding='12px';
+       line.style.border='1px solid #51584c';
+       line.style.borderRadius='8px';
+       const title=document.createElement('p');
+       title.textContent=(item.title||'Clip')+' · '+item.state+' · '+item.job_id;
+       const button=document.createElement('button');
+       button.type='button';button.className='secondary';
+       button.textContent='Ouvrir / Télécharger ce clip';
+       button.addEventListener('click',async()=>{
+         try{await monitor(item.job_id)}
+         catch(e){setRobot('Téléchargement : '+e.message,true)}
+       });
+       line.append(title,button);robotClips.appendChild(line);
+     }
+   }catch(e){setRobot('Liste de clips : '+e.message,true)}
  });
  async function api(path,options){
    const token=el('token').value.trim();

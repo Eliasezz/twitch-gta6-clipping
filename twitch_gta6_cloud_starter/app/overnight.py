@@ -113,7 +113,8 @@ def _candidates(limit=20):
           WHERE c.broadcaster_id IN ({placeholders})
             AND COALESCE(c.view_count,0) >= ?
             AND used.clip_id IS NULL
-          ORDER BY c.view_count DESC, c.created_at DESC
+          ORDER BY EXISTS(SELECT 1 FROM studio_top_clips s WHERE s.clip_id=c.id) DESC,
+                   c.view_count DESC, c.created_at DESC
           LIMIT ?
         """, (*sorted(allowed), MIN_VIEWS, limit)).fetchall()
         return [dict(r) for r in rows]

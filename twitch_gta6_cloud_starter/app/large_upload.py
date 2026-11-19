@@ -376,6 +376,9 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 </head>
 <body><header><b>REPLAY <em>/</em> STUDIO</b><a href="/api/docs">Documentation API ↗</a></header><main>
 <h1>Studio de montage</h1><p>Transforme ton stream en clips verticaux. Importe une vidéo, choisis ton montage et récupère les MP4.</p>
+<section class="card" id="selection"><h2>Clips populaires sélectionnés</h2>
+<p class="muted">Sélection automatique du radar pour le montage. Le robot traite les chaînes autorisées.</p>
+<ol id="topClips" aria-live="polite"></ol></section>
 <div class="workspace"><section class="card"><h2>Vidéo source</h2>
 <label for="video" class="drop">Choisir une vidéo <small>MP4, MOV ou MKV · 300 Mo maximum</small></label><input id="video" type="file" accept=".mp4,.mov,.mkv,video/*">
 <video id="preview" controls playsinline hidden></video>
@@ -526,6 +529,30 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
      await refreshRobot();
    }catch(e){setRobot('Ajout créateur : '+e.message,true)}
  });
+ async function loadTopClips(){
+   const list=el('topClips');
+   try{
+     const response=await fetch('/clips/selection',{cache:'no-store'});
+     if(!response.ok)throw Error();
+     const data=await response.json();
+     const rows=data.clips.map(clip=>{
+       const row=document.createElement('li');
+       const link=document.createElement('a');
+       link.href='https://clips.twitch.tv/'+encodeURIComponent(clip.id);
+       link.textContent=clip.title||'Ouvrir le clip';
+       link.target='_blank';link.rel='noopener noreferrer';
+       row.append(link, document.createElement('br'),
+         clip.broadcaster_name+' · '+Number(clip.view_count).toLocaleString('fr-FR')+' vues'+
+         (clip.creator_name?' · capturé par '+clip.creator_name:''));
+       row.style.marginBottom='12px';
+       return row;
+     });
+     list.replaceChildren(...rows);
+     if(!rows.length)list.textContent='Aucun clip récent au-dessus du seuil de vues.';
+   }catch(e){list.textContent='Sélection momentanément indisponible.'}
+ }
+ loadTopClips();
+ setInterval(loadTopClips,900000);
  async function loadInbox(){
    const data=await api('/automation/inbox');
    const list=el('inboxList');

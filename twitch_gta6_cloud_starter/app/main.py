@@ -110,6 +110,24 @@ def get_connection():
     return connection
 
 
+def refresh_top_selection(connection):
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)).isoformat()
+    connection.execute("DELETE FROM studio_top_clips")
+    connection.execute("""
+        INSERT INTO studio_top_clips (clip_id)
+        SELECT id FROM (
+            SELECT id, view_count, created_at,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY broadcaster_id ORDER BY view_count DESC, created_at DESC, id
+                   ) AS channel_rank
+            FROM clips
+            WHERE julianday(created_at) BETWEEN julianday(?) AND julianday('now')
+              AND view_count >= ? AND broadcaster_id IS NOT NULL
+        )
+        WHERE channel_rank <= 2 ORDER BY view_count DESC, created_at DESC, id LIMIT 10
+    """, (cutoff, MIN_VIEWS))
+
+
 def init_database():
     connection = get_connection()
 
@@ -250,6 +268,8 @@ def init_database():
                OR eligible_for_processing != 0
         """)
 
+        connection.execute("CREATE TABLE IF NOT EXISTS studio_top_clips (clip_id TEXT PRIMARY KEY)")
+        refresh_top_selection(connection)
         connection.commit()
 
         print("SQLite : migration terminée.")
@@ -632,6 +652,7 @@ def save_clips(clips: list[dict[str, Any]], known_ids: set[str]):
 
             saved_count += 1
 
+        refresh_top_selection(connection)
         connection.commit()
 
     except Exception:
@@ -890,6 +911,20 @@ def manual_poll(x_admin_token: str | None = Header(default=None)):
             status_code=502,
             detail="Twitch polling failed. Check the server logs."
         )
+
+
+@app.get("/clips/selection")
+def studio_selection():
+    db = get_connection()
+    try:
+        rows = db.execute("""
+            SELECT c.id,c.title,c.broadcaster_name,c.creator_name,c.view_count,c.created_at
+            FROM studio_top_clips s JOIN clips c ON c.id=s.clip_id
+            ORDER BY c.view_count DESC,c.created_at DESC,c.id
+        """).fetchall()
+        return {"clips": [dict(r) for r in rows]}
+    finally:
+        db.close()
 
 
 @app.get("/clips")

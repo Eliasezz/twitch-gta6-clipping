@@ -1,0 +1,45 @@
+name: Verify licensed overnight editor live
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verify-live-overnight.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify private editor readiness booleans from Render
+        run: |
+          python3 - <<'PY'
+          import json, time, urllib.request
+          origin="https://twitch-gta6-clipping.onrender.com"
+          for attempt in range(8):
+            try:
+              with urllib.request.urlopen(origin+"/automation/overnight/status",timeout=25) as r:
+                data=json.load(r)
+              with urllib.request.urlopen(origin+"/video/ready",timeout=25) as r:
+                video=json.load(r)
+              safe={
+                "automation_ready":data.get("ready_for_automatic_editing"),
+                "checks":data.get("checks"),
+                "creator_count":data.get("creator_count"),
+                "candidate_count":data.get("potential_next_clips"),
+                "radar_interval":data.get("radar_interval_seconds"),
+                "daily_edit_limit":data.get("edits_per_day_limit"),
+                "metricool_not_required":data.get("metricool_not_required_for_editing"),
+                "ffmpeg":video.get("available"),
+              }
+              print(json.dumps(safe,ensure_ascii=False),flush=True)
+              assert data["metricool_not_required_for_editing"] is True
+              assert data["edits_per_day_limit"] >= 1
+              assert data["radar_interval_seconds"] >= 60
+              print("SUCCESS live overnight routes and radar configured",flush=True)
+              break
+            except Exception as e:
+              print("Retry:",type(e).__name__,str(e)[:100],flush=True)
+              time.sleep(6)
+          else:
+            raise SystemExit("Could not verify live overnight endpoint")
+          PY

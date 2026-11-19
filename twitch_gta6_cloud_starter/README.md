@@ -269,6 +269,65 @@ available. The existing `POST /video/demo` remains synthetic and must
 not be scheduled.
 
  
+## Twitch radar → montage automatique nocturne (sans Metricool API)
+
+Le radar suit GTA VI toutes les 15 minutes sur Render lorsque le service est
+en ligne. Il peut maintenant générer jusqu'à **six clips autorisés par jour**
+(20–30 s, 540×960, H.264/AAC), conserver leur MP4 et leur ZIP privé,
+sans attendre une API Metricool payante. Aucun clip non autorisé n'est
+téléchargé. Les sorties restent accessibles via les jobs Render pendant
+`VIDEO_KEEP_HOURS` (48 h par défaut). Le disque 1 Go peut limiter le nombre
+réel de clips ; télécharger régulièrement les ZIP.
+
+**Activation obligatoire une seule fois** sur
+https://twitch-gta6-clipping.onrender.com/video/uploader :
+
+1. Dans https://dev.twitch.tv/console/apps, ajouter à l'application Twitch
+   existante le redirect URI exact :
+   `https://twitch-gta6-clipping.onrender.com/automation/twitch/callback`.
+2. Saisir `POLL_ADMIN_TOKEN` dans le studio, cliquer
+   **Connecter mon compte Twitch éditeur**, accepter
+   `editor:manage:clips`. Le compte Twitch connecté doit réellement
+   avoir le rôle d'éditeur pour chaque chaîne dont on souhaite télécharger
+   les Clips. L'application conserve seulement l'ID numérique de l'éditeur
+   et utilise un app access token Twitch après son consentement ;
+   elle ne stocke pas de refresh/access token utilisateur dans SQLite.
+3. Entrer le login Twitch du créateur avec qui on a un accord, cocher
+   l'autorisation de réutilisation puis cliquer **Ajouter ce créateur**.
+   Cette déclaration ne remplace pas le rôle Twitch éditeur.
+4. Vérifier **État du robot** ; il doit indiquer
+   `ready_for_automatic_editing=true`. `AUTO_PIPELINE_ENABLED=1`
+   doit rester dans l'environnement Render (sans y mettre de secrets dans
+   ChatGPT). Le radar actif sélectionne de nouveaux clips classés par vues,
+   les télécharge par l'endpoint officiel Twitch, identifie un passage fort
+   à partir de signaux réels, les transforme en Shorts et génère un ZIP.
+5. Cliquer **Mes clips Twitch montés** pour ouvrir chaque job et son MP4/ZIP
+   ; depuis l'API, `GET /automation/overnight/jobs` reçoit le
+   `X-Admin-Token`. La programmation sur TikTok/YouTube reste manuelle,
+   sauf configuration ET vérification indépendantes de Metricool API.
+   Les requêtes d'édition ne nécessitent plus `METRICOOL_API_TOKEN`.
+
+Le système **ne télécharge pas encore les replays VOD complets** ; la
+surveillance des replays sert à identifier les clips publics existants
+et le traitement officiel ne télécharge que les clips de chaînes
+autorisées. Les scores Twitch reposent sur les vues et signaux du clip,
+pas sur une mesure garantie d'émotion ou le nombre de messages par seconde
+sans chat horodaté.
+
+### API admin
+
+- `POST /automation/twitch/connect` : lien officiel d'autorisation OAuth
+- `POST /automation/twitch/creators` : attester les droits d'un créateur
+- `DELETE /automation/twitch/creators/{broadcaster_id}` : retirer un accord
+- `GET /automation/overnight/status` : états sans secrets
+- `GET /automation/overnight/shortlist` : clips autorisés candidats
+- `POST /automation/overnight/run` : lancer un montage autorisé
+- `GET /automation/overnight/jobs` : montages exportables
+
+`X-Admin-Token` est obligatoire sur les actions privées. Si les
+autorisations sont absentes, le robot retourne un état `blocked` et
+n'essaie jamais d'extraire un clip sans permission ou de publier un test.
+
 ## OpenAI ↔ Render OIDC workload identity (alternative to long-lived API keys)
 
 Render's managed OIDC for OpenAI requires a **Render Pro workspace or above**

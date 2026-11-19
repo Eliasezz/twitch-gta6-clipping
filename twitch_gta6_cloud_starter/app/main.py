@@ -62,9 +62,13 @@ app = FastAPI(
 from .video_routes import router as video_router
 from .autopilot import router as autopilot_router
 from .large_upload import router as large_upload_router
+from .overnight import router as overnight_router
+from .twitch_connection import router as twitch_connection_router
 app.include_router(video_router)
 app.include_router(autopilot_router)
 app.include_router(large_upload_router)
+app.include_router(overnight_router)
+app.include_router(twitch_connection_router)
 
 
 # ============================================================
@@ -788,6 +792,10 @@ def startup_event():
     init_database()
     from .autopilot import init_automation_db
     init_automation_db()
+    from .twitch_connection import init_connection_db
+    from .overnight import init_overnight_db
+    init_connection_db()
+    init_overnight_db()
 
     # Recover previously uploaded, fully received videos rejected by the
     # former 15-minute limit, without requiring another upload.

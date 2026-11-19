@@ -20,14 +20,30 @@ def _editor_settings():
     editor_id = os.getenv("TWITCH_EDITOR_ID", "").strip()
     token = os.getenv("TWITCH_EDITOR_ACCESS_TOKEN", "").strip()
     client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
-    if not (editor_id and token and client_id):
-        raise TwitchMediaError("Twitch editor OAuth is not configured")
-    return editor_id, token, client_id
+    if not client_id:
+        raise TwitchMediaError("TWITCH_CLIENT_ID is missing")
+    if editor_id and token:
+        # Preserve existing explicit user OAuth configuration.
+        return editor_id, token, client_id
+    # OAuth code grant connected through the private studio: use Twitch's
+    # official app access token after that editor has authorized this app.
+    from .twitch_connection import editor_connection
+    connected = editor_connection()
+    if not connected:
+        raise TwitchMediaError("Connect an authorized Twitch editor in the studio")
+    from .main import get_twitch_token
+    return connected["id"], get_twitch_token(), client_id
 
 
 def permitted_broadcaster(broadcaster_id):
-    allowed = {v.strip() for v in os.getenv("ALLOWED_BROADCASTER_IDS", "").split(",") if v.strip()}
-    return bool(str(broadcaster_id) in allowed)
+    from .twitch_connection import allowed_creators
+    try:
+        allowed = allowed_creators()
+    except Exception:
+        # At first startup database initialization can precede migration.
+        allowed = {v.strip() for v in os.getenv(
+            "ALLOWED_BROADCASTER_IDS", "").split(",") if v.strip()}
+    return str(broadcaster_id) in allowed
 
 
 def official_clip_url(broadcaster_id, clip_id):

@@ -5,6 +5,8 @@ clip. No direct Twitch CDN scraping. No unlicensed VOD downloads. No media
 from other jobs. Publication is deliberately separate and manual by default.
 """
 import os
+import re
+from urllib.parse import urlsplit
 import shutil
 import sqlite3
 import threading
@@ -40,6 +42,15 @@ def init_overnight_db():
             updated_at TEXT NOT NULL,
             error TEXT
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS studio_inbox (
+            id TEXT PRIMARY KEY, broadcaster_id TEXT, broadcaster_name TEXT,
+            title TEXT, submitted_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.executemany("""INSERT OR IGNORE INTO studio_inbox
+            (id, broadcaster_name, title) VALUES (?, 'Zerkaa', ?)""", [
+            ("PrettyTangibleMacaroniKevinTurtle-gbjo8gLeDVDzpkia", "Zerkaa · vicecityvirals"),
+            ("EmpathicSavoryRabbitOhMyDog-yrVM6FpD2zuyUAVK", "Zerkaa · deeksty"),
+        ])
         db.execute("CREATE INDEX IF NOT EXISTS overnight_created ON overnight_clip_jobs(created_at)")
         db.commit()
     finally:
@@ -107,6 +118,85 @@ def _candidates(limit=20):
         db.close()
 
 
+def clip_slug(url):
+    parts = urlsplit(url.strip())
+    path = parts.path.strip("/")
+    if parts.scheme == "https" and parts.netloc == "clips.twitch.tv":
+        slug = path
+    elif (parts.scheme == "https" and parts.netloc in {"twitch.tv", "www.twitch.tv", "m.twitch.tv"}
+          and re.fullmatch(r"[A-Za-z0-9_]+/clip/[A-Za-z0-9_-]+", path)):
+        slug = path.rsplit("/", 1)[1]
+    else:
+        raise HTTPException(422, "Colle le lien individuel d’un clip Twitch.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", slug):
+        raise HTTPException(422, "Identifiant de clip invalide.")
+    return slug
+
+
+@router.post("/inbox", status_code=202)
+def import_clip(url: str, background_tasks: BackgroundTasks,
+                x_admin_token: str | None = Header(default=None)):
+    from .main import twitch_get
+    from .video_routes import _authorize
+    _authorize(x_admin_token)
+    slug = clip_slug(url)
+    try:
+        rows = twitch_get("clips", {"id": slug})["data"]
+    except Exception:
+        raise HTTPException(502, "Twitch est momentanément inaccessible.")
+    if not rows:
+        raise HTTPException(404, "Twitch ne trouve plus ce clip.")
+    clip = rows[0]
+    db = _db()
+    try:
+        db.execute("""INSERT INTO studio_inbox (id,broadcaster_id,broadcaster_name,title)
+            VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            broadcaster_id=excluded.broadcaster_id,broadcaster_name=excluded.broadcaster_name,
+            title=excluded.title""", (slug, clip["broadcaster_id"], clip["broadcaster_name"], clip["title"]))
+        db.execute("DELETE FROM overnight_clip_jobs WHERE clip_id=? AND state='failed'", (slug,))
+        db.commit()
+    finally:
+        db.close()
+    background_tasks.add_task(run_once)
+    return {"id": slug, "title": clip["title"]}
+
+
+@router.get("/inbox")
+def list_inbox(x_admin_token: str | None = Header(default=None)):
+    from .video_routes import _authorize
+    _authorize(x_admin_token)
+    db = _db()
+    try:
+        return {"clips": [dict(row) for row in db.execute("""
+            SELECT i.id,i.title,i.broadcaster_name,j.job_id,j.state,j.error
+            FROM studio_inbox i LEFT JOIN overnight_clip_jobs j ON j.clip_id=i.id
+            ORDER BY i.submitted_at DESC,i.rowid DESC LIMIT 100""")]}
+    finally:
+        db.close()
+
+
+def _requested_candidates():
+    from .main import twitch_get
+    allowed = allowed_creators()
+    db = _db()
+    try:
+        missing = [r[0] for r in db.execute("""
+            SELECT i.id FROM studio_inbox i JOIN twitch_authorized_creators a
+            ON lower(i.broadcaster_name)=lower(a.login)
+            WHERE i.broadcaster_id IS NULL LIMIT 100""")]
+        if missing:
+            for item in twitch_get("clips", {"id": missing}).get("data", []):
+                db.execute("UPDATE studio_inbox SET broadcaster_id=? WHERE id=?",
+                           (item["broadcaster_id"], item["id"]))
+            db.commit()
+        rows = db.execute("""SELECT i.* FROM studio_inbox i
+            LEFT JOIN overnight_clip_jobs j ON j.clip_id=i.id
+            WHERE j.clip_id IS NULL ORDER BY i.submitted_at,i.rowid""")
+        return [dict(r) for r in rows if r["broadcaster_id"] in allowed]
+    finally:
+        db.close()
+
+
 def _used_today():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
     db = _db()
@@ -154,13 +244,13 @@ def run_once():
             return {"status": "daily_edit_limit_reached", "limit": _limit()}
         if shutil.disk_usage(VIDEO_DIR).free < 250 * 1024 * 1024:
             return {"status": "insufficient_disk_space", "minimum_free_mb": 250}
-        candidates = _candidates()
+        candidates = _requested_candidates() or _candidates()
         if not candidates:
             return {"status": "no_new_permissioned_clips"}
         clip = candidates[0]
         job_id = str(uuid.uuid4())
-        _record(clip, job_id, "downloading")
         folder = _job_dir(job_id)
+        _record(clip, job_id, "downloading")
         folder.mkdir(parents=True, exist_ok=False)
         src = folder / "source.mp4"
         _write_status(folder, {
@@ -208,7 +298,12 @@ def run_once():
                 "file": "ready-to-publish.zip"}
     except Exception as exc:
         if clip is not None and job_id is not None:
-            _record(clip, job_id, "failed", type(exc).__name__)
+            detail = str(exc) if isinstance(exc, (twitch_media.TwitchMediaError, ValueError)) else type(exc).__name__
+            _record(clip, job_id, "failed", detail)
+            if (folder / "status.json").exists():
+                status = _read_status(job_id)
+                status.update(state="failed", error_detail=detail)
+                _write_status(folder, status)
         print("Overnight licensed clip failed:", type(exc).__name__)
         return {"status": "failed", "job_id": job_id, "error": type(exc).__name__}
     finally:

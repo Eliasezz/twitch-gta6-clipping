@@ -423,6 +423,11 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
 <p class="muted">Aucun mot de passe n'est enregistré dans le navigateur. Les vidéos de test ne sont pas publiées automatiquement. Les fichiers terminés sont temporaires (48 h par défaut).</p>
 </section>
 <section class="card" style="margin-top:18px">
+<h2>Importer un clip Twitch</h2>
+<label for="clipLink">Lien du clip</label><input id="clipLink" type="url" placeholder="https://clips.twitch.tv/…">
+<div class="controls"><button id="saveClip" type="button">Ajouter au montage automatique</button>
+<button id="readInbox" type="button" class="secondary">Mes liens enregistrés</button></div>
+<p id="importStatus" role="status" aria-live="polite"></p><div id="inboxList"></div>
 <h2>Robot Twitch · Clips automatiques pendant la nuit</h2>
 <p>Le radar recherche GTA VI toutes les 15 minutes. Pour transformer les clips sans import, connecte un compte Twitch éditeur, puis ajoute uniquement les créateurs qui t'ont autorisé à réutiliser leurs vidéos. Les montages sont enregistrés ici, même sans Metricool.</p>
 <p class="muted"><b>Étape obligatoire :</b> dans <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener noreferrer">Twitch Developer Console</a>, ajoute l'adresse de redirection <code>https://twitch-gta6-clipping.onrender.com/automation/twitch/callback</code> à ton application Twitch.</p>
@@ -521,6 +526,36 @@ main{background:transparent;border:0;padding:38px 20px}h1{font:700 clamp(36px,6v
      await refreshRobot();
    }catch(e){setRobot('Ajout créateur : '+e.message,true)}
  });
+ async function loadInbox(){
+   const data=await api('/automation/inbox');
+   const list=el('inboxList');
+   list.replaceChildren();
+   const labels={done:'Montage terminé',editing:'Montage en cours',downloading:'Téléchargement',failed:'Échec'};
+   for(const clip of data.clips){
+     const row=document.createElement('p');
+     row.textContent=clip.title+' · '+(labels[clip.state]||'En attente du robot ou de l’accès éditeur');
+     if(clip.error)row.append(' · '+clip.error);
+     if(clip.state==='done'){
+       const link=document.createElement('a');
+       link.href='?job_id='+encodeURIComponent(clip.job_id);
+       link.textContent=' Télécharger le montage';
+       row.append(link);
+     }
+     list.append(row);
+   }
+ }
+ el('readInbox').onclick=()=>loadInbox().catch(e=>el('importStatus').textContent=e.message);
+ el('saveClip').onclick=async()=>{
+   const button=el('saveClip');
+   button.disabled=true;
+   try{
+     const item=await api('/automation/inbox?url='+encodeURIComponent(el('clipLink').value.trim()),{method:'POST'});
+     el('importStatus').textContent='Lien enregistré · '+item.title;
+     el('clipLink').value='';
+     await loadInbox();
+   }catch(e){el('importStatus').textContent=e.message}
+   finally{button.disabled=false}
+ };
  async function refreshRobot(){
    const data=await api('/automation/overnight/status');
    const gates=Object.entries(data.checks||{}).map(([name,ok])=>
